@@ -1,0 +1,199 @@
+"""Inference API endpoints."""
+
+import asyncio
+import json
+import logging
+import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+
+from backend.models.inference import InferenceRequest, InferenceResponse
+from backend.models.system import ProcessStatus
+from backend.services.config_manager import ConfigManager
+from backend.services.port_lock_manager import PortInUseError, port_lock_manager
+from backend.services.process_manager import process_manager
+
+router = APIRouter()
+config_manager = ConfigManager()
+logger = logging.getLogger(__name__)
+
+
+def build_inference_command(config, request: InferenceRequest) -> list[str]:
+    """Build inference command from config and request.
+
+    Inference uses lerobot-record with --policy.path and NO --teleop.* flags.
+    The policy replaces the teleoperator and controls the robot autonomously.
+    """
+    cameras_dict = {}
+    if config.mode == "bimanual":
+        for cam in config.bimanual.cameras:
+            cameras_dict[cam.name] = {
+                "type": "opencv",
+                "index_or_path": cam.index,
+                "width": cam.width,
+                "height": cam.height,
+                "fps": cam.fps,
+            }
+
+        bi = config.bimanual
+        return [
+            "lerobot-record",
+            "--robot.type=bi_so101_follower",
+            f"--robot.left_arm_port={bi.left_follower_port}",
+            f"--robot.right_arm_port={bi.right_follower_port}",
+            f"--robot.id={bi.follower_id or 'bimanual_follower'}",
+            f"--robot.cameras={json.dumps(cameras_dict)}",
+            f"--dataset.repo_id={request.repo_id}",
+            f"--dataset.single_task={request.single_task}",
+            f"--dataset.num_episodes={request.num_episodes}",
+            f"--dataset.episode_time_s={request.episode_time_s}",
+            f"--display_data={str(request.display_data).lower()}",
+            f"--policy.path={request.policy_path}",
+        ]
+    else:
+        for cam in config.single_arm.cameras:
+            cameras_dict[cam.name] = {
+                "type": "opencv",
+                "index_or_path": cam.index,
+                "width": cam.width,
+                "height": cam.height,
+                "fps": cam.fps,
+            }
+
+        sa = config.single_arm
+        return [
+            "lerobot-record",
+            "--robot.type=so101_follower",
+            f"--robot.port={sa.follower_port}",
+            f"--robot.id={sa.follower_id or 'single_follower'}",
+            f"--robot.cameras={json.dumps(cameras_dict)}",
+            f"--dataset.repo_id={request.repo_id}",
+            f"--dataset.single_task={request.single_task}",
+            f"--dataset.num_episodes={request.num_episodes}",
+            f"--dataset.episode_time_s={request.episode_time_s}",
+            f"--display_data={str(request.display_data).lower()}",
+            f"--policy.path={request.policy_path}",
+        ]
+
+
+def _extract_inference_ports(config) -> list[str]:
+    """Extract follower ports used by inference (no teleop ports needed)."""
+    if config.mode == "bimanual":
+        bi = config.bimanual
+        return [p for p in [bi.left_follower_port, bi.right_follower_port] if p]
+    else:
+        return [config.single_arm.follower_port] if config.single_arm.follower_port else []
+
+
+@router.post("/start", response_model=InferenceResponse)
+async def start_inference(request: InferenceRequest):
+    """Start policy inference (autonomous robot control)."""
+    ports = []
+    try:
+        config = config_manager.load_config()
+
+        # Validate config - only need robot ports and cameras (no teleop needed)
+        if config.mode == "bimanual":
+            if not all(
+                [
+                    config.bimanual.left_follower_port,
+                    config.bimanual.right_follower_port,
+                ]
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Bimanual mode requires both follower arm ports to be configured",
+                )
+
+            if not config.bimanual.cameras:
+                raise HTTPException(
+                    status_code=400, detail="No cameras configured for inference"
+                )
+        else:
+            if not config.single_arm.follower_port:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Single arm mode requires a follower port to be configured",
+                )
+
+            if not config.single_arm.cameras:
+                raise HTTPException(
+                    status_code=400, detail="No cameras configured for inference"
+                )
+
+        # Acquire port locks
+        ports = _extract_inference_ports(config)
+        try:
+            await port_lock_manager.acquire(ports, owner="inference", mode="subprocess")
+        except PortInUseError as e:
+            raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner, "port": e.port})
+
+        # Clear stale eval dataset cache to prevent conflicts on re-runs
+        cache_cleared = False
+        cache_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / request.repo_id
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            cache_cleared = True
+            logger.info("Cleared stale eval cache at %s", cache_dir)
+
+        command = build_inference_command(config, request)
+        process_id = await process_manager.start_process(command, "inference")
+
+        # Register process→ports mapping for release on stop
+        await port_lock_manager.register_process(process_id, ports)
+
+        msg = "Inference started successfully"
+        if cache_cleared:
+            msg += " (previous eval cache cleared)"
+
+        return InferenceResponse(process_id=process_id, message=msg)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if ports:
+            await port_lock_manager.release(ports)
+        raise HTTPException(status_code=500, detail=f"Failed to start inference: {e}")
+
+
+@router.post("/stop/{process_id}")
+async def stop_inference(process_id: str):
+    """Stop inference."""
+    try:
+        success = await process_manager.stop_process(process_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=404, detail=f"Process {process_id} not found"
+            )
+
+        # Wait for OS to release ports, then release locks
+        await asyncio.sleep(0.5)
+        await port_lock_manager.release_for_process(process_id)
+
+        return {"message": "Inference stopped successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop inference: {e}")
+
+
+@router.get("/status/{process_id}", response_model=ProcessStatus)
+async def get_inference_status(process_id: str):
+    """Get inference process status."""
+    try:
+        status = await process_manager.get_status(process_id)
+
+        if not status:
+            raise HTTPException(
+                status_code=404, detail=f"Process {process_id} not found"
+            )
+
+        return status
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {e}")
