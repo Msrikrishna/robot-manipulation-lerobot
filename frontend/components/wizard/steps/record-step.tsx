@@ -18,6 +18,13 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -200,6 +207,256 @@ function RecordingStatusCard({
 }
 
 // ---------------------------------------------------------------------------
+// Countdown for the active phase (recording or resetting)
+// ---------------------------------------------------------------------------
+
+function usePhaseCountdown(
+  phase: RecordPhase,
+  currentEpisode: number | null,
+) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    startRef.current = Date.now();
+    setElapsedMs(0);
+    if (phase !== "recording" && phase !== "resetting") return;
+    const id = setInterval(() => {
+      setElapsedMs(Date.now() - startRef.current);
+    }, 200);
+    return () => clearInterval(id);
+  }, [phase, currentEpisode]);
+
+  return elapsedMs / 1000;
+}
+
+// ---------------------------------------------------------------------------
+// Round / countdown progress card
+// ---------------------------------------------------------------------------
+
+function RoundProgressCard({
+  phase,
+  currentEpisode,
+  numEpisodes,
+  episodeTimeS,
+  resetTimeS,
+}: {
+  phase: RecordPhase;
+  currentEpisode: number | null;
+  numEpisodes: number;
+  episodeTimeS: number;
+  resetTimeS: number;
+}) {
+  const elapsed = usePhaseCountdown(phase, currentEpisode);
+
+  const isRecording = phase === "recording";
+  const isResetting = phase === "resetting";
+  if (!isRecording && !isResetting) return null;
+
+  const totalS = isRecording ? episodeTimeS : resetTimeS;
+  const remaining = Math.max(0, Math.ceil(totalS - elapsed));
+  const progressPct =
+    totalS > 0 ? Math.min(100, (elapsed / totalS) * 100) : 0;
+
+  const phaseLabel = isRecording ? "Recording" : "Waiting — reset the scene";
+  const phaseSub = isRecording
+    ? "Perform the task now."
+    : "Get the environment ready for the next episode.";
+  const barColor = isRecording ? "bg-red-500" : "bg-amber-500";
+  const numberColor = isRecording
+    ? "text-red-600 dark:text-red-400"
+    : "text-amber-600 dark:text-amber-400";
+
+  const roundNum = currentEpisode !== null ? currentEpisode + 1 : null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between text-base">
+          <span>
+            Round{" "}
+            <span className="tabular-nums">
+              {roundNum ?? "—"}
+            </span>{" "}
+            <span className="text-muted-foreground font-normal">
+              / {numEpisodes}
+            </span>
+          </span>
+          <span
+            className={`text-xs font-medium uppercase tracking-wide ${
+              isRecording
+                ? "text-red-600 dark:text-red-400"
+                : "text-amber-600 dark:text-amber-400"
+            }`}
+          >
+            {phaseLabel}
+          </span>
+        </CardTitle>
+        <CardDescription>{phaseSub}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-baseline gap-2">
+          <span
+            className={`font-mono tabular-nums text-5xl font-semibold ${numberColor}`}
+          >
+            {remaining}
+          </span>
+          <span className="text-sm text-muted-foreground">
+            s remaining / {totalS}s
+          </span>
+        </div>
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full transition-[width] duration-200 ease-linear ${barColor}`}
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Track which episodes have finished recording (transitioned out of "recording")
+// ---------------------------------------------------------------------------
+
+function useCompletedEpisodes(
+  phase: RecordPhase,
+  currentEpisode: number | null,
+  isRunning: boolean,
+) {
+  const [completed, setCompleted] = useState<Set<number>>(new Set());
+  const prevPhaseRef = useRef<RecordPhase>("idle");
+  const prevEpisodeRef = useRef<number | null>(null);
+
+  // Reset accumulated state whenever a new run starts
+  useEffect(() => {
+    if (!isRunning) return;
+    setCompleted(new Set());
+    prevPhaseRef.current = "idle";
+    prevEpisodeRef.current = null;
+  }, [isRunning]);
+
+  useEffect(() => {
+    const prevPhase = prevPhaseRef.current;
+    const prevEp = prevEpisodeRef.current;
+
+    setCompleted((prev) => {
+      const next = new Set(prev);
+      // recording → non-recording: current episode just finished
+      if (
+        prevPhase === "recording" &&
+        phase !== "recording" &&
+        currentEpisode !== null
+      ) {
+        next.add(currentEpisode);
+      }
+      // recording episode N → recording episode N+1: previous episode finished
+      if (
+        prevPhase === "recording" &&
+        phase === "recording" &&
+        prevEp !== null &&
+        currentEpisode !== null &&
+        currentEpisode !== prevEp
+      ) {
+        next.add(prevEp);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+
+    prevPhaseRef.current = phase;
+    prevEpisodeRef.current = currentEpisode;
+  }, [phase, currentEpisode]);
+
+  const reset = useCallback(() => setCompleted(new Set()), []);
+  return { completed, reset };
+}
+
+// ---------------------------------------------------------------------------
+// Episode status circles — green by default, click to mark failed (red)
+// ---------------------------------------------------------------------------
+
+function EpisodeStatusList({
+  numEpisodes,
+  completed,
+  failed,
+  currentEpisode,
+  phase,
+  onToggleFailed,
+}: {
+  numEpisodes: number;
+  completed: Set<number>;
+  failed: Set<number>;
+  currentEpisode: number | null;
+  phase: RecordPhase;
+  onToggleFailed: (episode: number) => void;
+}) {
+  if (completed.size === 0) return null;
+
+  // Sort completed episodes ascending so the row reads left-to-right by index
+  const items = Array.from(completed).sort((a, b) => a - b);
+  const failedCount = items.filter((ep) => failed.has(ep)).length;
+  const successCount = items.length - failedCount;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between text-base">
+          <span>Episodes</span>
+          <span className="text-xs font-normal text-muted-foreground">
+            <span className="text-emerald-600 dark:text-emerald-400">
+              {successCount} good
+            </span>
+            {" · "}
+            <span className="text-red-600 dark:text-red-400">
+              {failedCount} failed
+            </span>
+            {" · "}
+            <span>{items.length} / {numEpisodes} recorded</span>
+          </span>
+        </CardTitle>
+        <CardDescription>
+          Click a circle to toggle it between good (green) and failed (red).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-1.5">
+          {items.map((ep) => {
+            const isFailed = failed.has(ep);
+            return (
+              <button
+                key={ep}
+                type="button"
+                onClick={() => onToggleFailed(ep)}
+                title={`Episode ${ep + 1} — ${isFailed ? "failed (click to mark good)" : "good (click to mark failed)"}`}
+                className={`flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-medium text-white tabular-nums transition-all hover:scale-110 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background ${
+                  isFailed
+                    ? "bg-red-500 focus:ring-red-500"
+                    : "bg-emerald-500 focus:ring-emerald-500"
+                }`}
+              >
+                {ep + 1}
+              </button>
+            );
+          })}
+          {/* Show a placeholder for the currently-recording episode */}
+          {phase === "recording" &&
+            currentEpisode !== null &&
+            !completed.has(currentEpisode) && (
+              <div
+                title={`Episode ${currentEpisode + 1} — recording…`}
+                className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-red-500 text-[11px] font-medium tabular-nums text-red-600 dark:text-red-400 animate-pulse"
+              >
+                {currentEpisode + 1}
+              </div>
+            )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -226,6 +483,20 @@ export function RecordStep() {
 
   // Phase detection from log stream
   const { phase, currentEpisode } = useRecordingPhase(logs, isRunning);
+
+  // Track which episodes have completed recording, plus user-marked failures
+  const { completed: completedEpisodes, reset: resetCompleted } =
+    useCompletedEpisodes(phase, currentEpisode, isRunning);
+  const [failedEpisodes, setFailedEpisodes] = useState<Set<number>>(new Set());
+
+  const toggleFailedEpisode = useCallback((episode: number) => {
+    setFailedEpisodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(episode)) next.delete(episode);
+      else next.add(episode);
+      return next;
+    });
+  }, []);
 
   // Motor + camera feeds (only when displayData is on)
   const { motors, motorOrder, frequency } = useMotorState(
@@ -320,6 +591,8 @@ export function RecordStep() {
     setErrorMsg(null);
     setShowLogs(false);
     setRecordingSuccess(false);
+    setFailedEpisodes(new Set());
+    resetCompleted();
     try {
       const suffix = config.repoId.trim();
       if (!hfStatus?.username) {
@@ -678,6 +951,27 @@ export function RecordStep() {
             )}
           </div>
         )}
+
+        {/* Round + countdown progress card */}
+        {isRunning && (
+          <RoundProgressCard
+            phase={phase}
+            currentEpisode={currentEpisode}
+            numEpisodes={config.numEpisodes}
+            episodeTimeS={config.episodeTimeS}
+            resetTimeS={config.resetTimeS}
+          />
+        )}
+
+        {/* Per-episode status circles (good / failed) */}
+        <EpisodeStatusList
+          numEpisodes={config.numEpisodes}
+          completed={completedEpisodes}
+          failed={failedEpisodes}
+          currentEpisode={currentEpisode}
+          phase={phase}
+          onToggleFailed={toggleFailedEpisode}
+        />
       </div>
     </StepCard>
   );
