@@ -58,7 +58,9 @@ lerobot-record \
 ```
 """
 
+import contextlib
 import logging
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -164,6 +166,10 @@ class DatasetRecordConfig:
     # Number of episodes to record before batch encoding videos
     # Set to 1 for immediate encoding (default behavior), or higher for batched encoding
     video_encoding_batch_size: int = 1
+    # When False, skip MP4 video encoding entirely (per-episode + final batch
+    # flush). Captured PNG frames remain on disk but no .mp4 files are written.
+    # Useful for throwaway eval datasets where the policy run is all that matters.
+    encode_videos: bool = True
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
 
@@ -452,7 +458,19 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     listener, events = init_keyboard_listener()
 
-    with VideoEncodingManager(dataset):
+    # When encoding is disabled, raise batch_encoding_size so save_episode never
+    # triggers inline encoding, and replace the VideoEncodingManager (which
+    # encodes any remaining episodes on exit) with a no-op.
+    if not cfg.dataset.encode_videos:
+        dataset.batch_encoding_size = sys.maxsize
+        logging.info("Video encoding disabled (--dataset.encode_videos=false); skipping mp4 encoding.")
+    video_encoding_ctx = (
+        VideoEncodingManager(dataset)
+        if cfg.dataset.encode_videos
+        else contextlib.nullcontext()
+    )
+
+    with video_encoding_ctx:
         recorded_episodes = 0
         while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
             log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
