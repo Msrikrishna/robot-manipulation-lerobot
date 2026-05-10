@@ -257,24 +257,55 @@ class _CameraStream:
                 self._reader_thread.start()
 
     def remove_client(self) -> None:
+        # Decide whether to stop under the lock, then release it before calling
+        # _stop() so we don't hold self._lock through the blocking process.join.
+        should_stop = False
         with self._lock:
             self._clients = max(0, self._clients - 1)
             if self._clients == 0:
-                self._stop()
+                should_stop = True
+        if should_stop:
+            self._stop()
 
     def _stop(self) -> None:
-        self._running = False
-        if self._stop_event is not None:
-            self._stop_event.set()
-        if self._process is not None:
-            # Give the process a brief moment to exit cleanly, then kill it.
-            # Use a short timeout (0.5s) to avoid blocking threads/event loop.
-            self._process.join(timeout=0.5)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(timeout=1)
+        # Idempotent and safe to call concurrently. Two callers commonly race
+        # here: the explicit /stop endpoint and the MJPEG generator's finally
+        # block (via remove_client when the browser disconnects). Capture the
+        # process/event handles under the lock and clear the fields so only
+        # one caller sees non-None values; the other becomes a no-op.
+        with self._lock:
+            if self._process is None and not self._running:
+                return
+            self._running = False
+            proc = self._process
+            stop_event = self._stop_event
+            reader_thread = self._reader_thread
             self._process = None
-        self._frame = None
+            self._stop_event = None
+            self._queue = None
+            self._reader_thread = None
+            self._frame = None
+
+        # Blocking work runs outside the lock so other API requests aren't held
+        # up waiting on multiprocessing.Process.join().
+        if stop_event is not None:
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+        if proc is not None:
+            try:
+                proc.join(timeout=0.5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=1)
+            except Exception:
+                pass
+        if reader_thread is not None:
+            try:
+                reader_thread.join(timeout=0.5)
+            except Exception:
+                pass
 
     @property
     def frame(self) -> bytes | None:
