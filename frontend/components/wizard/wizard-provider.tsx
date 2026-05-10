@@ -415,18 +415,82 @@ interface WizardContextValue {
 
 const WizardContext = createContext<WizardContextValue | null>(null);
 
+// Subset of WizardState that is safe to persist across sessions. Excludes
+// runtime/detection state (process IDs, detected ports/cameras, current step,
+// completion flags, debug toggle).
+const PERSIST_KEY = "wizardSettings_v1";
+const LEGACY_INFERENCE_KEY = "inferenceConfig";
+
+type PersistedWizardSettings = Partial<
+  Pick<
+    WizardState,
+    | "robotMode"
+    | "portAssignments"
+    | "cameraSelections"
+    | "calibrationSelections"
+    | "newCalibrationNames"
+    | "recordingConfig"
+    | "trainingConfig"
+    | "inferenceConfig"
+    | "phases"
+    | "activePhaseId"
+  >
+>;
+
+function readPersisted(): PersistedWizardSettings | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (raw) return JSON.parse(raw) as PersistedWizardSettings;
+    // Backwards compat: read legacy single-key inferenceConfig store
+    const legacy = localStorage.getItem(LEGACY_INFERENCE_KEY);
+    if (legacy) return { inferenceConfig: JSON.parse(legacy) };
+  } catch {}
+  return null;
+}
+
+function extractPersisted(state: WizardState): PersistedWizardSettings {
+  return {
+    robotMode: state.robotMode,
+    portAssignments: state.portAssignments,
+    cameraSelections: state.cameraSelections,
+    calibrationSelections: state.calibrationSelections,
+    newCalibrationNames: state.newCalibrationNames,
+    recordingConfig: state.recordingConfig,
+    trainingConfig: state.trainingConfig,
+    inferenceConfig: state.inferenceConfig,
+    phases: state.phases,
+    activePhaseId: state.activePhaseId,
+  };
+}
+
 function getInitialState(): WizardState {
   if (typeof window === "undefined") return INITIAL_STATE;
-  try {
-    const saved = localStorage.getItem("inferenceConfig");
-    if (saved) {
-      return {
-        ...INITIAL_STATE,
-        inferenceConfig: { ...INITIAL_INFERENCE_CONFIG, ...JSON.parse(saved) },
-      };
-    }
-  } catch {}
-  return INITIAL_STATE;
+  const saved = readPersisted();
+  if (!saved) return INITIAL_STATE;
+  return {
+    ...INITIAL_STATE,
+    robotMode: saved.robotMode ?? INITIAL_STATE.robotMode,
+    portAssignments: saved.portAssignments ?? INITIAL_STATE.portAssignments,
+    cameraSelections: saved.cameraSelections ?? INITIAL_STATE.cameraSelections,
+    calibrationSelections:
+      saved.calibrationSelections ?? INITIAL_STATE.calibrationSelections,
+    newCalibrationNames:
+      saved.newCalibrationNames ?? INITIAL_STATE.newCalibrationNames,
+    recordingConfig: {
+      ...INITIAL_STATE.recordingConfig,
+      ...(saved.recordingConfig ?? {}),
+    },
+    trainingConfig: {
+      ...INITIAL_STATE.trainingConfig,
+      ...(saved.trainingConfig ?? {}),
+    },
+    inferenceConfig: {
+      ...INITIAL_INFERENCE_CONFIG,
+      ...(saved.inferenceConfig ?? {}),
+    },
+    phases: saved.phases ?? INITIAL_STATE.phases,
+    activePhaseId: saved.activePhaseId ?? INITIAL_STATE.activePhaseId,
+  };
 }
 
 export function WizardProvider({ children }: { children: ReactNode }) {
@@ -434,9 +498,23 @@ export function WizardProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem("inferenceConfig", JSON.stringify(state.inferenceConfig));
+      localStorage.setItem(
+        PERSIST_KEY,
+        JSON.stringify(extractPersisted(state))
+      );
     } catch {}
-  }, [state.inferenceConfig]);
+  }, [
+    state.robotMode,
+    state.portAssignments,
+    state.cameraSelections,
+    state.calibrationSelections,
+    state.newCalibrationNames,
+    state.recordingConfig,
+    state.trainingConfig,
+    state.inferenceConfig,
+    state.phases,
+    state.activePhaseId,
+  ]);
 
   const goToStep = useCallback(
     (step: number) => dispatch({ type: "GO_TO_STEP", step }),
@@ -452,10 +530,13 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     [state.currentStep]
   );
 
-  const clearAllValues = useCallback(
-    () => dispatch({ type: "CLEAR_ALL_VALUES" }),
-    []
-  );
+  const clearAllValues = useCallback(() => {
+    try {
+      localStorage.removeItem(PERSIST_KEY);
+      localStorage.removeItem(LEGACY_INFERENCE_KEY);
+    } catch {}
+    dispatch({ type: "CLEAR_ALL_VALUES" });
+  }, []);
 
   const restart = useCallback(() => dispatch({ type: "RESTART" }), []);
 
