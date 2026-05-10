@@ -38,8 +38,9 @@ import { StepCard } from "../step-card";
 import { InferenceStep } from "./inference-step";
 
 const PHASE_SETTLE_MS = 2500; // wait between sequenced phases for cameras to release cleanly
-const RETRY_DELAY_MS = 3500; // extra wait before retrying after a camera fps error
-const PHASE_MAX_RETRIES = 1; // auto-retries per phase on transient camera errors
+const MANUAL_SWITCH_SETTLE_MS = 1500; // shorter pause after a manual stop before starting the next phase
+const RETRY_DELAY_MS = 4500; // extra wait before retrying after a camera fps error
+const PHASE_MAX_RETRIES = 2; // auto-retries per phase on transient camera errors
 
 const CAMERA_TRANSIENT_ERROR_PATTERNS = [
   /failed to set fps/i,
@@ -171,9 +172,9 @@ export function PhasesStep() {
           if (canRetry && phaseIdx >= 0) {
             retryCountRef.current += 1;
             setRunError(
-              `Camera didn't settle — retrying in ${Math.round(
+              `Camera didn't settle — auto-retrying in ${Math.round(
                 RETRY_DELAY_MS / 1000
-              )}s (attempt ${retryCountRef.current + 1}/${PHASE_MAX_RETRIES + 1})`
+              )}s (attempt ${retryCountRef.current + 1} of ${PHASE_MAX_RETRIES + 1})`
             );
             // mark this end as intentional so the falling-edge effect doesn't advance
             cancelRef.current = true;
@@ -222,6 +223,9 @@ export function PhasesStep() {
         await services.stopInference(id);
       } catch {}
       dispatch({ type: "SET_INFERENCE_PROCESS_ID", id: null });
+      // Camera handles need a moment to release on macOS — without this short
+      // pause, the next lerobot subprocess often hits "failed to set fps".
+      await sleep(MANUAL_SWITCH_SETTLE_MS);
     }
   }
 

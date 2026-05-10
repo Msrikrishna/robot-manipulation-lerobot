@@ -48,6 +48,8 @@ def build_inference_command(config, request: InferenceRequest) -> list[str]:
             f"--dataset.single_task={request.single_task}",
             f"--dataset.num_episodes={request.num_episodes}",
             f"--dataset.episode_time_s={request.episode_time_s}",
+            "--dataset.push_to_hub=false",
+            "--dataset.encode_videos=false",
             f"--display_data={str(request.display_data).lower()}",
             f"--policy.path={request.policy_path}",
         ]
@@ -72,6 +74,8 @@ def build_inference_command(config, request: InferenceRequest) -> list[str]:
             f"--dataset.single_task={request.single_task}",
             f"--dataset.num_episodes={request.num_episodes}",
             f"--dataset.episode_time_s={request.episode_time_s}",
+            "--dataset.push_to_hub=false",
+            "--dataset.encode_videos=false",
             f"--display_data={str(request.display_data).lower()}",
             f"--policy.path={request.policy_path}",
         ]
