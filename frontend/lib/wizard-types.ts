@@ -96,6 +96,28 @@ export interface InferenceConfig {
   modelType: string; // "act" | "smolvla" | "diffusion" etc.
 }
 
+// A phase is a saved inference configuration that can be run as part of a sequence
+export interface Phase {
+  id: string;
+  name: string;
+  config: InferenceConfig;
+}
+
+// Compute the total wall-clock time for a phase (in seconds)
+export function getPhaseTimeSeconds(phase: Phase): number {
+  return Math.max(0, phase.config.numEpisodes) * Math.max(0, phase.config.episodeTimeS);
+}
+
+// Format a duration in seconds as "Xm Ys" or "Ys"
+export function formatPhaseDuration(seconds: number): string {
+  if (seconds <= 0) return "0s";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m === 0) return `${s}s`;
+  if (s === 0) return `${m}m`;
+  return `${m}m ${s}s`;
+}
+
 // Supported inference model types
 export const INFERENCE_MODELS = [
   { value: "act", label: "ACT", supported: true },
@@ -113,7 +135,7 @@ export interface StartResponse {
 
 // Wizard state
 export interface WizardState {
-  currentStep: number; // 0-7
+  currentStep: number; // 0-8
   completedSteps: boolean[];
   debugMode: boolean;
 
@@ -154,6 +176,11 @@ export interface WizardState {
   inferenceStepVisited: boolean;
   inferenceConfig: InferenceConfig;
   inferenceProcessId: string | null;
+
+  // Step 8: Phases
+  phasesStepVisited: boolean;
+  phases: Phase[];
+  activePhaseId: string | null;
 }
 
 // Port roles by mode
@@ -201,6 +228,7 @@ export const STEPS = [
   { label: "Record", description: "Record training data" },
   { label: "Training", description: "Train a policy with Qualia Studios" },
   { label: "Inference", description: "Run trained policy on robot" },
+  { label: "Phases", description: "Run multiple inference phases in sequence" },
 ] as const;
 
 // Initial state
@@ -240,7 +268,7 @@ export const INITIAL_RECORDING_CONFIG: RecordingConfig = {
 
 export const INITIAL_STATE: WizardState = {
   currentStep: 0,
-  completedSteps: [false, false, false, false, false, false, false, false],
+  completedSteps: [false, false, false, false, false, false, false, false, false],
   debugMode: false,
   robotMode: null,
   detectedPorts: [],
@@ -264,6 +292,9 @@ export const INITIAL_STATE: WizardState = {
   inferenceStepVisited: false,
   inferenceConfig: { ...INITIAL_INFERENCE_CONFIG },
   inferenceProcessId: null,
+  phasesStepVisited: false,
+  phases: [],
+  activePhaseId: null,
 };
 
 // ─── Bimanual calibration naming validation ─────────────────────────────────

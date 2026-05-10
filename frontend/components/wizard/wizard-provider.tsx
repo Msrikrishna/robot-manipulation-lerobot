@@ -17,6 +17,7 @@ import type {
   RecordingConfig,
   InferenceConfig,
   TrainingConfig,
+  Phase,
 } from "@/lib/wizard-types";
 import {
   INITIAL_STATE,
@@ -50,13 +51,18 @@ type Action =
   | { type: "CLEAR_TRAINING_JOB" }
   | { type: "SET_INFERENCE_CONFIG"; config: Partial<InferenceConfig> }
   | { type: "SET_INFERENCE_PROCESS_ID"; id: string | null }
+  | { type: "ADD_PHASE"; phase?: Partial<Phase> }
+  | { type: "REMOVE_PHASE"; id: string }
+  | { type: "UPDATE_PHASE"; id: string; patch: Partial<Phase> }
+  | { type: "UPDATE_PHASE_CONFIG"; id: string; config: Partial<InferenceConfig> }
+  | { type: "SET_ACTIVE_PHASE"; id: string | null }
   | { type: "TOGGLE_DEBUG_MODE" }
   | { type: "CLEAR_ALL_VALUES" }
   | { type: "RESTART" };
 
 // Step completion checker
 function computeCompletedSteps(state: WizardState): boolean[] {
-  const completed = [false, false, false, false, false, false, false, false];
+  const completed = [false, false, false, false, false, false, false, false, false];
 
   // Step 0: Robot Type
   completed[0] = state.robotMode !== null;
@@ -97,11 +103,12 @@ function computeCompletedSteps(state: WizardState): boolean[] {
     }
   }
 
-  // Steps 4-7: complete once the user has visited them
+  // Steps 4-8: complete once the user has visited them
   completed[4] = state.teleStepVisited;
   completed[5] = state.recordStepVisited;
   completed[6] = state.trainingStepVisited;
   completed[7] = state.inferenceStepVisited;
+  completed[8] = state.phasesStepVisited;
 
   return completed;
 }
@@ -145,6 +152,11 @@ function resetStepsFrom(state: WizardState, fromStep: number): WizardState {
     s.inferenceConfig = { ...INITIAL_INFERENCE_CONFIG };
     s.inferenceProcessId = null;
   }
+  if (fromStep <= 8) {
+    s.phasesStepVisited = false;
+    s.phases = [];
+    s.activePhaseId = null;
+  }
 
   s.completedSteps = computeCompletedSteps(s);
   return s;
@@ -163,6 +175,7 @@ function reducer(state: WizardState, action: Action): WizardState {
         recordStepVisited: state.recordStepVisited || action.step === 5,
         trainingStepVisited: state.trainingStepVisited || action.step === 6,
         inferenceStepVisited: state.inferenceStepVisited || action.step === 7,
+        phasesStepVisited: state.phasesStepVisited || action.step === 8,
       };
       break;
 
@@ -318,6 +331,57 @@ function reducer(state: WizardState, action: Action): WizardState {
       next = { ...state, inferenceProcessId: action.id };
       break;
 
+    case "ADD_PHASE": {
+      const id =
+        action.phase?.id ??
+        (typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `phase_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      const baseConfig = action.phase?.config ?? {
+        ...state.inferenceConfig,
+      };
+      const phase: Phase = {
+        id,
+        name: action.phase?.name ?? `Phase ${state.phases.length + 1}`,
+        config: { ...baseConfig },
+      };
+      next = { ...state, phases: [...state.phases, phase] };
+      break;
+    }
+
+    case "REMOVE_PHASE":
+      next = {
+        ...state,
+        phases: state.phases.filter((p) => p.id !== action.id),
+        activePhaseId:
+          state.activePhaseId === action.id ? null : state.activePhaseId,
+      };
+      break;
+
+    case "UPDATE_PHASE":
+      next = {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.id === action.id ? { ...p, ...action.patch } : p
+        ),
+      };
+      break;
+
+    case "UPDATE_PHASE_CONFIG":
+      next = {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.id === action.id
+            ? { ...p, config: { ...p.config, ...action.config } }
+            : p
+        ),
+      };
+      break;
+
+    case "SET_ACTIVE_PHASE":
+      next = { ...state, activePhaseId: action.id };
+      break;
+
     case "TOGGLE_DEBUG_MODE":
       next = { ...state, debugMode: !state.debugMode };
       break;
@@ -383,7 +447,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     () =>
       dispatch({
         type: "GO_TO_STEP",
-        step: Math.min(state.currentStep + 1, 7),
+        step: Math.min(state.currentStep + 1, 8),
       }),
     [state.currentStep]
   );

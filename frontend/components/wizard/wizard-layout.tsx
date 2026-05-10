@@ -11,6 +11,7 @@ import { TeleoperateStep } from "./steps/teleoperate-step";
 import { RecordStep } from "./steps/record-step";
 import { TrainingStep } from "./steps/training-step";
 import { InferenceStep } from "./steps/inference-step";
+import { PhasesStep } from "./steps/phases-step";
 import { DebugPanel } from "./steps/debug-panel";
 
 const STEP_COMPONENTS = [
@@ -22,6 +23,7 @@ const STEP_COMPONENTS = [
   RecordStep,
   TrainingStep,
   InferenceStep,
+  PhasesStep,
 ];
 
 export function WizardLayout() {
