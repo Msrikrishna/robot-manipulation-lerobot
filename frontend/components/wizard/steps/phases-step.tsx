@@ -162,7 +162,7 @@ export function PhasesStep() {
         const status = await services.getInferenceStatus(processId);
         if (status.state === "error") {
           stopPolling();
-          await services.stopInference(processId).catch(() => {});
+          await services.stopInference(processId, { force: true }).catch(() => {});
 
           const transient = isCameraTransientError(logsRef.current);
           const canRetry =
@@ -201,7 +201,7 @@ export function PhasesStep() {
           dispatch({ type: "SET_INFERENCE_PROCESS_ID", id: null });
         } else if (status.state === "stopped") {
           stopPolling();
-          await services.stopInference(processId).catch(() => {});
+          await services.stopInference(processId, { force: true }).catch(() => {});
           dispatch({ type: "SET_INFERENCE_PROCESS_ID", id: null });
         }
       } catch {
@@ -220,7 +220,10 @@ export function PhasesStep() {
     const id = stateRef.current.inferenceProcessId;
     if (id) {
       try {
-        await services.stopInference(id);
+        // Force-kill: eval datasets are throwaway, so we skip the SIGTERM
+        // grace period (which on the running backend runs the video-encoding
+        // flush + image-writer drain — wasted seconds for no persistent benefit).
+        await services.stopInference(id, { force: true });
       } catch {}
       dispatch({ type: "SET_INFERENCE_PROCESS_ID", id: null });
       // Camera handles need a moment to release on macOS — without this short

@@ -317,9 +317,13 @@ export const services = {
     return fetchAPI("/api/huggingface/whoami");
   },
 
-  stopInference: async (processId: string): Promise<void> => {
+  stopInference: async (
+    processId: string,
+    options: { force?: boolean } = {}
+  ): Promise<void> => {
     if (USE_MOCK) return;
-    await fetchAPI(`/api/inference/stop/${processId}`, { method: "POST" });
+    const qs = options.force ? "?force=true" : "";
+    await fetchAPI(`/api/inference/stop/${processId}${qs}`, { method: "POST" });
   },
 
   detectBasePort: async (ports: string[]): Promise<{ detected_port: string | null; message: string }> => {

@@ -162,18 +162,27 @@ async def start_inference(request: InferenceRequest):
 
 
 @router.post("/stop/{process_id}")
-async def stop_inference(process_id: str):
-    """Stop inference."""
+async def stop_inference(process_id: str, force: bool = False):
+    """Stop inference.
+
+    Query params:
+        force: If True, SIGKILL the subprocess immediately and skip the SIGTERM
+            grace period. Eval datasets are throwaway, so the graceful shutdown
+            (video encoding flush, image-writer drain) wastes seconds for no
+            persistent benefit. Defaults to False to preserve existing behavior.
+    """
     try:
-        success = await process_manager.stop_process(process_id)
+        success = await process_manager.stop_process(process_id, force=force)
 
         if not success:
             raise HTTPException(
                 status_code=404, detail=f"Process {process_id} not found"
             )
 
-        # Wait for OS to release ports, then release locks
-        await asyncio.sleep(0.5)
+        # Wait for OS to release ports, then release locks. SIGKILL'd processes
+        # release file descriptors immediately so we can skip this pause.
+        if not force:
+            await asyncio.sleep(0.5)
         await port_lock_manager.release_for_process(process_id)
 
         return {"message": "Inference stopped successfully"}

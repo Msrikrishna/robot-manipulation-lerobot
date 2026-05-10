@@ -135,12 +135,20 @@ class ProcessManager:
             except Exception:
                 pass
 
-    async def stop_process(self, process_id: str, timeout: float = 5.0) -> bool:
+    async def stop_process(
+        self,
+        process_id: str,
+        timeout: float = 5.0,
+        force: bool = False,
+    ) -> bool:
         """Stop a running subprocess.
 
         Args:
             process_id: Process identifier.
-            timeout: Timeout in seconds before force kill.
+            timeout: Timeout in seconds before force kill (ignored when force=True).
+            force: If True, skip SIGTERM grace and SIGKILL immediately. Used for
+                throwaway flows (e.g. inference eval datasets) where graceful
+                shutdown's video encoding / writer drain wastes time.
 
         Returns:
             True if stopped successfully, False otherwise.
@@ -155,31 +163,45 @@ class ProcessManager:
                 process_info.stopped_at = datetime.now()
                 return True
 
-        return await self._stop_process_unlocked(process_info)
+        return await self._stop_process_unlocked(process_info, timeout=timeout, force=force)
 
-    async def _stop_process_unlocked(self, process_info: ProcessInfo, timeout: float = 5.0) -> bool:
+    async def _stop_process_unlocked(
+        self,
+        process_info: ProcessInfo,
+        timeout: float = 5.0,
+        force: bool = False,
+    ) -> bool:
         """Stop a process without acquiring the lock. Caller must ensure safe access."""
         if process_info.process.returncode is not None:
             process_info.stopped_at = datetime.now()
             return True
 
-        # Send SIGTERM
-        try:
-            process_info.process.send_signal(signal.SIGTERM)
-        except ProcessLookupError:
-            process_info.stopped_at = datetime.now()
-            return True
-
-        # Wait for graceful shutdown
-        try:
-            await asyncio.wait_for(process_info.process.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            # Force kill with SIGKILL
+        if force:
+            # Skip the SIGTERM grace period entirely. The OS reclaims file
+            # descriptors (camera handles included) on process teardown.
             try:
                 process_info.process.kill()
                 await process_info.process.wait()
             except ProcessLookupError:
                 pass
+        else:
+            # Send SIGTERM
+            try:
+                process_info.process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                process_info.stopped_at = datetime.now()
+                return True
+
+            # Wait for graceful shutdown
+            try:
+                await asyncio.wait_for(process_info.process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Force kill with SIGKILL
+                try:
+                    process_info.process.kill()
+                    await process_info.process.wait()
+                except ProcessLookupError:
+                    pass
 
         process_info.stopped_at = datetime.now()
 
