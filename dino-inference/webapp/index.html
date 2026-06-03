@@ -85,6 +85,13 @@
 
   /* result */
   .result { min-height: 360px; display: flex; flex-direction: column; }
+  #resultGamma {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  #resultGamma label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+  #resultGamma .val { color: var(--accent-2); font-variant-numeric: tabular-nums; }
+  #resultGamma input[type=range] { width: 100%; accent-color: var(--accent); }
   .stage {
     flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
     align-items: start;
@@ -203,6 +210,31 @@
         <select id="cmap"></select>
         <div class="desc">Brighter/warmer = nearer (works for both relative and metric models).</div>
       </div>
+      <!-- contrast / range amplification (depth-map view only) -->
+      <div id="depthTuneWrap">
+        <div class="control">
+          <label>Contrast clip — low pct <span class="val" id="dLowV">2</span></label>
+          <input type="range" id="dPctLow" min="0" max="20" step="1" value="2" />
+        </div>
+        <div class="control">
+          <label>Contrast clip — high pct <span class="val" id="dHighV">98</span></label>
+          <input type="range" id="dPctHigh" min="80" max="100" step="1" value="98" />
+          <div class="desc">Stretch the colormap over a robust percentile window instead of raw min/max, so a few far pixels don't flatten the foreground. This alone usually fixes “everything looks the same”.</div>
+        </div>
+        <div class="control">
+          <label>Depth window (override) <span class="val" id="dRangeV">auto</span></label>
+          <div class="row">
+            <input type="number" id="dNear" placeholder="near m" step="0.05" min="0" />
+            <input type="number" id="dFar" placeholder="far m" step="0.05" min="0" />
+          </div>
+          <div class="desc">Metric models: clamp the colormap to a metres window (e.g. 0.2 → 0.9 for a tabletop). Leave blank for auto (percentile). Narrower window = finer cm-per-color, more visible relief.</div>
+        </div>
+        <div class="control">
+          <label>Gamma <span class="val" id="dGammaV">1.00</span></label>
+          <input type="range" id="dGamma" min="0.3" max="2.5" step="0.05" value="1" />
+          <div class="desc">&lt;1 boosts contrast among near surfaces; &gt;1 boosts far.</div>
+        </div>
+      </div>
     </div>
 
     <div class="control">
@@ -223,6 +255,11 @@
   <!-- RESULTS -->
   <div class="panel result">
     <h2>Result</h2>
+    <div id="resultGamma" style="display:none">
+      <label>Gamma <span class="val" id="gammaTopV">1.00</span>
+        <span style="color:var(--muted); font-weight:400">— live, no re-run</span></label>
+      <input type="range" id="dGammaTop" min="0.3" max="2.5" step="0.05" value="1" />
+    </div>
     <div class="stage">
       <div class="frame">
         <div class="cap">Input</div>
@@ -242,6 +279,7 @@
 let MODE = 'pca';
 let FILE = null;
 let LAST_OUT = null;
+let LAST_TOKEN = null;   // server-side handle to the last depth array, for live re-colour
 let CFG = null;
 
 const $ = id => document.getElementById(id);
@@ -392,6 +430,7 @@ function setMode(m) {
   $('pcaControls').style.display = m === 'pca' ? 'block' : 'none';
   $('depthControls').style.display = m === 'depth' ? 'block' : 'none';
   $('modeBadge').textContent = m === 'pca' ? 'PCA features' : 'Depth';
+  updateResultGammaVis();
 }
 
 // live value labels
@@ -403,11 +442,22 @@ bind('bgThreshold', 'bgV', x => Number(x).toFixed(2));
 bind('maxSide', 'maxSideV');
 $('pcaModel').addEventListener('change', e => $('pcaModelV').textContent = e.target.value);
 $('cmap').addEventListener('change', e => $('cmapV').textContent = e.target.value);
-$('depthModel').addEventListener('change', onDepthModelChange);
+$('depthModel').addEventListener('change', () => { LAST_TOKEN = null; onDepthModelChange(); });
 $('depthView').addEventListener('change', e => {
-  $('depthViewV').textContent = e.target.value === 'pca' ? 'feature PCA' : 'depth map';
-  $('cmapWrap').style.display = e.target.value === 'pca' ? 'none' : 'block';
+  const pca = e.target.value === 'pca';
+  $('depthViewV').textContent = pca ? 'feature PCA' : 'depth map';
+  $('cmapWrap').style.display = pca ? 'none' : 'block';
+  $('depthTuneWrap').style.display = pca ? 'none' : 'block';
+  updateResultGammaVis();
 });
+bind('dPctLow', 'dLowV'); bind('dPctHigh', 'dHighV');
+bind('dGamma', 'dGammaV', x => Number(x).toFixed(2));
+const updateRangeLabel = () => {
+  const n = $('dNear').value, f = $('dFar').value;
+  $('dRangeV').textContent = (n || f) ? `${n || 'min'} – ${f || 'max'} m` : 'auto';
+};
+$('dNear').addEventListener('input', updateRangeLabel);
+$('dFar').addEventListener('input', updateRangeLabel);
 $('removeBg').addEventListener('change', e => $('bgThreshWrap').style.display = e.target.checked ? 'block' : 'none');
 
 // ---- dropzone ----
@@ -499,6 +549,7 @@ async function loadFromUrl(url) {
 function loadFile(f) {
   if (!f.type.startsWith('image/')) return;
   FILE = f;
+  LAST_TOKEN = null;   // new image -> old cached depth is stale
   const url = URL.createObjectURL(f);
   $('preview').src = url; $('preview').style.display = 'block';
   $('dropEmpty').style.display = 'none';
@@ -546,6 +597,11 @@ async function generate() {
   } else {
     fd.append('model', $('depthModel').value);
     fd.append('colormap', $('cmap').value);
+    fd.append('pct_low', $('dPctLow').value);
+    fd.append('pct_high', $('dPctHigh').value);
+    fd.append('near', $('dNear').value || 0);
+    fd.append('far', $('dFar').value || 0);
+    fd.append('gamma', $('dGamma').value);
   }
 
   try {
@@ -553,6 +609,10 @@ async function generate() {
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
     LAST_OUT = data.image;
+    // Token lets the display sliders re-colour this depth map without re-running
+    // the model. Only the depth-map view returns one.
+    LAST_TOKEN = (MODE === 'depth' && $('depthView').value === 'depth') ? (data.token || null) : null;
+    updateResultGammaVis();
     $('outputSlot').innerHTML = `<img src="${data.image}" />`;
     $('outCap').textContent = MODE === 'pca' ? 'PCA feature map'
       : ($('depthView').value === 'pca' ? 'Depth feature PCA' : 'Depth');
@@ -569,6 +629,50 @@ async function generate() {
 function renderStats(info) {
   $('stats').innerHTML = Object.entries(info)
     .map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join('');
+}
+
+// ---- live re-colour: gamma / range / colormap update the *already generated*
+// depth map without re-running the model (uses the cached depth on the server) ----
+let recolorTimer = null;
+async function recolorDepth() {
+  if (!LAST_TOKEN || MODE !== 'depth' || $('depthView').value !== 'depth') return;
+  const fd = new FormData();
+  fd.append('token', LAST_TOKEN);
+  fd.append('side_by_side_out', $('sbs').checked);
+  fd.append('colormap', $('cmap').value);
+  fd.append('pct_low', $('dPctLow').value);
+  fd.append('pct_high', $('dPctHigh').value);
+  fd.append('near', $('dNear').value || 0);
+  fd.append('far', $('dFar').value || 0);
+  fd.append('gamma', $('dGamma').value);
+  try {
+    const res = await fetch('/api/depth/recolor', { method: 'POST', body: fd });
+    if (res.status === 410) { LAST_TOKEN = null; updateResultGammaVis(); return; }   // evicted -> Generate again
+    const data = await res.json();
+    if (!res.ok || data.error) return;
+    LAST_OUT = data.image;
+    $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+    renderStats(data.info);
+  } catch (e) { /* transient; next slider move retries */ }
+}
+const liveRecolor = () => { clearTimeout(recolorTimer); recolorTimer = setTimeout(recolorDepth, 120); };
+['dPctLow', 'dPctHigh', 'dGamma', 'dNear', 'dFar'].forEach(id => $(id).addEventListener('input', liveRecolor));
+$('cmap').addEventListener('change', liveRecolor);
+$('sbs').addEventListener('change', liveRecolor);
+
+// Keep the prominent top gamma slider and the one in the controls panel in sync.
+function setGamma(v) {
+  $('dGamma').value = v; $('dGammaTop').value = v;
+  const s = Number(v).toFixed(2);
+  $('dGammaV').textContent = s; $('gammaTopV').textContent = s;
+}
+$('dGammaTop').addEventListener('input', e => { setGamma(e.target.value); liveRecolor(); });
+$('dGamma').addEventListener('input', e => setGamma(e.target.value));
+
+// The top gamma bar is only meaningful for a generated depth map.
+function updateResultGammaVis() {
+  const show = MODE === 'depth' && $('depthView').value === 'depth' && !!LAST_TOKEN;
+  $('resultGamma').style.display = show ? 'block' : 'none';
 }
 
 function downloadOut() {

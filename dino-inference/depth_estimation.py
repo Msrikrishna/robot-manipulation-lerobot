@@ -33,8 +33,14 @@ MODELS = {
     "dinov2-nyu-small": ("facebook/dpt-dinov2-small-nyu", True),
     "dinov2-nyu-base": ("facebook/dpt-dinov2-base-nyu", True),
     "dinov2-nyu-giant": ("facebook/dpt-dinov2-giant-nyu", True),
+    "da2-small": ("depth-anything/Depth-Anything-V2-Small-hf", False),
+    "da2-base": ("depth-anything/Depth-Anything-V2-Base-hf", False),
     "da2-large": ("depth-anything/Depth-Anything-V2-Large-hf", False),
+    "da2-indoor-small": ("depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf", True),
+    "da2-indoor-base": ("depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf", True),
     "da2-indoor": ("depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf", True),
+    "da2-outdoor-small": ("depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf", True),
+    "da2-outdoor-base": ("depth-anything/Depth-Anything-V2-Metric-Outdoor-Base-hf", True),
     "da2-outdoor": ("depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf", True),
 }
 

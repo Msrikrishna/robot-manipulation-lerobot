@@ -81,6 +81,21 @@ DEPTH_MODELS = {
         "gated": False, "metric": True, "size_mb": 9596,
         "backbone": "DINOv2-G", "dataset": "NYU Depth v2 (indoor)",
     },
+    "depth-anything-v2-small": {
+        "repo": "depth-anything/Depth-Anything-V2-Small-hf",
+        "label": "Depth Anything V2 · Small (relative)",
+        "desc": "Smallest credible depth model. Relative inverse depth; great "
+                "quality-per-MB for quick previews.",
+        "gated": False, "metric": False, "size_mb": 99,
+        "backbone": "DINOv2-S", "dataset": "synthetic + 62M pseudo-labeled real",
+    },
+    "depth-anything-v2-base": {
+        "repo": "depth-anything/Depth-Anything-V2-Base-hf",
+        "label": "Depth Anything V2 · Base (relative)",
+        "desc": "Mid-size DA-V2. Relative inverse depth; better detail than Small.",
+        "gated": False, "metric": False, "size_mb": 390,
+        "backbone": "DINOv2-B", "dataset": "synthetic + 62M pseudo-labeled real",
+    },
     "depth-anything-v2-large": {
         "repo": "depth-anything/Depth-Anything-V2-Large-hf",
         "label": "Depth Anything V2 · Large (relative)",
@@ -88,16 +103,45 @@ DEPTH_MODELS = {
         "gated": False, "metric": False, "size_mb": 1341,
         "backbone": "DINOv2-L", "dataset": "synthetic + 62M pseudo-labeled real",
     },
+    "depth-anything-v2-metric-indoor-small": {
+        "repo": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
+        "label": "Depth Anything V2 · Metric Indoor (Small)",
+        "desc": "Smallest metric indoor model — metric meters at 99 MB. Best "
+                "lightweight pick for manipulation.",
+        "gated": False, "metric": True, "size_mb": 99,
+        "backbone": "DINOv2-S", "dataset": "Hypersim (indoor)",
+    },
+    "depth-anything-v2-metric-indoor-base": {
+        "repo": "depth-anything/Depth-Anything-V2-Metric-Indoor-Base-hf",
+        "label": "Depth Anything V2 · Metric Indoor (Base)",
+        "desc": "Mid-size metric indoor. Better detail than Small.",
+        "gated": False, "metric": True, "size_mb": 390,
+        "backbone": "DINOv2-B", "dataset": "Hypersim (indoor)",
+    },
     "depth-anything-v2-metric-indoor": {
         "repo": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",
-        "label": "Depth Anything V2 · Metric Indoor",
-        "desc": "Metric meters, indoor (Hypersim). Best pick for manipulation.",
+        "label": "Depth Anything V2 · Metric Indoor (Large)",
+        "desc": "Metric meters, indoor (Hypersim). Sharpest metric indoor model.",
         "gated": False, "metric": True, "size_mb": 1341,
         "backbone": "DINOv2-L", "dataset": "Hypersim (indoor)",
     },
+    "depth-anything-v2-metric-outdoor-small": {
+        "repo": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",
+        "label": "Depth Anything V2 · Metric Outdoor (Small)",
+        "desc": "Smallest metric outdoor model — metric meters at 99 MB.",
+        "gated": False, "metric": True, "size_mb": 99,
+        "backbone": "DINOv2-S", "dataset": "Virtual KITTI (outdoor)",
+    },
+    "depth-anything-v2-metric-outdoor-base": {
+        "repo": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Base-hf",
+        "label": "Depth Anything V2 · Metric Outdoor (Base)",
+        "desc": "Mid-size metric outdoor. Better detail than Small.",
+        "gated": False, "metric": True, "size_mb": 390,
+        "backbone": "DINOv2-B", "dataset": "Virtual KITTI (outdoor)",
+    },
     "depth-anything-v2-metric-outdoor": {
         "repo": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf",
-        "label": "Depth Anything V2 · Metric Outdoor",
+        "label": "Depth Anything V2 · Metric Outdoor (Large)",
         "desc": "Metric meters, outdoor / driving-scale (Virtual KITTI).",
         "gated": False, "metric": True, "size_mb": 1341,
         "backbone": "DINOv2-L", "dataset": "Virtual KITTI (outdoor)",
@@ -176,12 +220,37 @@ def get_depth_pipe(model_id: str):
 _DL_PATTERNS = ["*.safetensors", "*.bin", "*.json", "*.txt", "*.model"]
 
 
-def _is_cached(repo: str) -> bool:
-    """True if the repo's config is already in the local HF cache."""
-    try:
-        from huggingface_hub import try_to_load_from_cache
+def _repo_snapshot_dir(repo: str) -> Path | None:
+    """The cache `snapshots/<rev>/` dir for a repo (entries are symlinks into
+    `blobs/`), or None if nothing is cached."""
+    from huggingface_hub.constants import HF_HUB_CACHE
 
-        return isinstance(try_to_load_from_cache(repo, "config.json"), str)
+    base = Path(HF_HUB_CACHE) / ("models--" + repo.replace("/", "--")) / "snapshots"
+    if not base.exists():
+        return None
+    revs = [d for d in base.iterdir() if d.is_dir()]
+    return revs[0] if revs else None
+
+
+def _is_cached(repo: str) -> bool:
+    """True only if the repo is *fully* downloaded — i.e. a weights file is
+    present and there are no partial `*.incomplete` files. Checking config.json
+    alone is a false positive: it downloads first, so a half-finished (or merely
+    probed) model would wrongly look ready and then block on a weight download
+    at inference time."""
+    try:
+        blobs = _repo_blobs_dir(repo)
+        if not blobs.exists():
+            return False
+        if any(p.name.endswith(".incomplete") for p in blobs.iterdir()):
+            return False  # a download is in progress / was interrupted
+        snap = _repo_snapshot_dir(repo)
+        if snap is None:
+            return False
+        return any(
+            f.suffix in (".safetensors", ".bin") and f.exists()
+            for f in snap.rglob("*")
+        )
     except Exception:
         return False
 
@@ -406,27 +475,96 @@ def run_pca(
     return pca_img, info
 
 
-def run_depth(img: Image.Image, colormap: str, model_key: str):
+def run_depth(
+    img: Image.Image,
+    colormap: str,
+    model_key: str,
+    pct_low: float = 2.0,
+    pct_high: float = 98.0,
+    near: float = 0.0,
+    far: float = 0.0,
+    gamma: float = 1.0,
+):
+    """Predict depth and map it to colour.
+
+    The display range — not just min/max — decides how much near-vs-far contrast
+    you see. A few far pixels with plain min/max normalization crush the whole
+    foreground into one colour. So we stretch the colormap over a *clipped*
+    range: an explicit [near, far] in metres if given, else a robust
+    [pct_low, pct_high] percentile window. `gamma` (<1 = more near contrast)
+    further reshapes the ramp.
+    """
     spec = DEPTH_MODELS.get(model_key, DEPTH_MODELS[DEFAULT_DEPTH_KEY])
     repo = spec["repo"]
     metric = spec.get("metric", False)
     pipe = get_depth_pipe(repo)
     result = pipe(img)
     depth = result["predicted_depth"].squeeze().float().cpu().numpy()
-    d01 = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+    depth_img, info = render_depth(
+        depth, metric, repo, img.size, colormap, pct_low, pct_high, near, far, gamma
+    )
+    # depth + metric are returned too so the caller can cache them and re-colour
+    # (gamma/range/colormap) live without re-running the model.
+    return depth_img, info, depth, metric
+
+
+def render_depth(depth, metric, repo, size, colormap, pct_low, pct_high, near, far, gamma):
+    """Pure colour-mapping step: depth array (+ display params) -> colour image.
+    No model involved, so this is cheap enough to call on every slider move."""
+    raw_min, raw_max = float(depth.min()), float(depth.max())
+    # Pick the display window: manual metres take priority, else percentiles.
+    if near > 0 or far > 0:
+        lo = near if near > 0 else raw_min
+        hi = far if far > 0 else raw_max
+    else:
+        lo = float(np.percentile(depth, pct_low))
+        hi = float(np.percentile(depth, pct_high))
+    if hi <= lo:
+        hi = lo + 1e-6
+
+    d01 = np.clip((depth - lo) / (hi - lo), 0, 1)
+    if gamma and gamma != 1.0:
+        d01 = d01 ** float(gamma)
     # Metric models output distance (larger = farther); invert so the colormap's
     # "warmer = nearer" convention holds across both model families.
     if metric:
         d01 = 1.0 - d01
-    depth_img = apply_colormap(d01, colormap).resize(img.size, Image.BILINEAR)
+    depth_img = apply_colormap(d01, colormap).resize(size, Image.BILINEAR)
+
+    span = hi - lo
     info = {
         "shape": f"{depth.shape[0]}x{depth.shape[1]}",
-        "raw_min": round(float(depth.min()), 3),
-        "raw_max": round(float(depth.max()), 3),
+        "raw_min": round(raw_min, 3),
+        "raw_max": round(raw_max, 3),
+        "shown_range": f"{lo:.2f}–{hi:.2f} {'m' if metric else 'rel'}",
         "units": "meters" if metric else "relative",
         "model": repo,
     }
+    if metric:
+        # cm of depth per 8-bit colour step over the shown range = display
+        # granularity. Narrower range -> finer steps -> more visible relief.
+        info["cm_per_color_step"] = round(span / 255 * 100, 2)
     return depth_img, info
+
+
+# Cache of recent raw depth arrays so the colour controls (gamma/range/colormap)
+# can re-render without re-running the model. Bounded; oldest evicted.
+from collections import OrderedDict  # noqa: E402
+
+_DEPTH_CACHE: "OrderedDict[str, dict]" = OrderedDict()
+_DEPTH_CACHE_MAX = 8
+_DEPTH_CACHE_LOCK = threading.Lock()
+
+
+def _cache_depth(depth, metric: bool, repo: str, orig: Image.Image) -> str:
+    import uuid
+
+    token = uuid.uuid4().hex
+    with _DEPTH_CACHE_LOCK:
+        _DEPTH_CACHE[token] = {"depth": depth, "metric": metric, "repo": repo, "orig": orig}
+        while len(_DEPTH_CACHE) > _DEPTH_CACHE_MAX:
+            _DEPTH_CACHE.popitem(last=False)
+    return token
 
 
 def _collect_4d(obj, out, depth=2):
@@ -509,6 +647,12 @@ def run_depth_pca(img: Image.Image, model_key: str, size: int, pct_low: float, p
 
 # ---- app ------------------------------------------------------------------
 app = FastAPI(title="DINOv3 Playground")
+
+# Inference is CPU/GPU-bound and must run off the event loop (via threadpool) or
+# it freezes the whole UI. The lock then serializes those threaded runs so two
+# concurrent generates can't contend for MPS / the shared model at once — the
+# second waits without blocking the event loop (page + config stay responsive).
+_INFER_LOCK = asyncio.Lock()
 
 
 @app.on_event("shutdown")
@@ -693,9 +837,11 @@ async def api_pca(
     img = read_image(await image.read(), max_side)
     t0 = time.time()
     try:
-        result, info = run_pca(
-            img, model_id, size, pct_low, pct_high, n_components, remove_bg, bg_threshold
-        )
+        async with _INFER_LOCK:
+            result, info = await run_in_threadpool(
+                run_pca, img, model_id, size, pct_low, pct_high,
+                n_components, remove_bg, bg_threshold,
+            )
     except Exception as e:  # surface model/auth errors to the UI
         return JSONResponse({"error": str(e)}, status_code=500)
     out = side_by_side(img, result) if side_by_side_out else result
@@ -710,6 +856,11 @@ async def api_depth(
     image: UploadFile = File(...),
     model: str = Form(DEFAULT_DEPTH_KEY),
     colormap: str = Form("turbo"),
+    pct_low: float = Form(2.0),
+    pct_high: float = Form(98.0),
+    near: float = Form(0.0),
+    far: float = Form(0.0),
+    gamma: float = Form(1.0),
     side_by_side_out: bool = Form(False),
     max_side: int = Form(1024),
 ):
@@ -725,12 +876,46 @@ async def api_depth(
     img = read_image(await image.read(), max_side)
     t0 = time.time()
     try:
-        result, info = run_depth(img, colormap, model)
+        async with _INFER_LOCK:
+            result, info, depth, metric = await run_in_threadpool(
+                run_depth, img, colormap, model, pct_low, pct_high, near, far, gamma
+            )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+    token = _cache_depth(depth, metric, spec["repo"], img)
     out = side_by_side(img, result) if side_by_side_out else result
     info["working_res"] = f"{img.width}x{img.height}"
     info["seconds"] = round(time.time() - t0, 2)
+    return {"image": to_b64_png(out), "info": info, "token": token}
+
+
+@app.post("/api/depth/recolor")
+async def api_depth_recolor(
+    token: str = Form(...),
+    colormap: str = Form("turbo"),
+    pct_low: float = Form(2.0),
+    pct_high: float = Form(98.0),
+    near: float = Form(0.0),
+    far: float = Form(0.0),
+    gamma: float = Form(1.0),
+    side_by_side_out: bool = Form(False),
+):
+    """Re-colour a previously computed depth map (no inference) so display
+    controls update live. 410 if the cached depth has been evicted -> the client
+    should re-generate."""
+    with _DEPTH_CACHE_LOCK:
+        entry = _DEPTH_CACHE.get(token)
+        if entry is not None:
+            _DEPTH_CACHE.move_to_end(token)  # keep hot entries from being evicted
+    if entry is None:
+        return JSONResponse({"error": "depth expired — regenerate", "stale": True}, status_code=410)
+    orig = entry["orig"]
+    depth_img, info = await run_in_threadpool(
+        render_depth, entry["depth"], entry["metric"], entry["repo"], orig.size,
+        colormap, pct_low, pct_high, near, far, gamma,
+    )
+    out = side_by_side(orig, depth_img) if side_by_side_out else depth_img
+    info["working_res"] = f"{orig.width}x{orig.height}"
     return {"image": to_b64_png(out), "info": info}
 
 
@@ -754,7 +939,10 @@ async def api_depth_pca(
     img = read_image(await image.read(), max_side)
     t0 = time.time()
     try:
-        result, info = run_depth_pca(img, model, size, pct_low, pct_high)
+        async with _INFER_LOCK:
+            result, info = await run_in_threadpool(
+                run_depth_pca, img, model, size, pct_low, pct_high
+            )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     out = side_by_side(img, result) if side_by_side_out else result
