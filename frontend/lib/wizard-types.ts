@@ -60,9 +60,9 @@ export const DEFAULT_MODEL_IDS: Record<string, string> = {
 export const TRAINING_MODELS = [
   { value: "act", label: "ACT", supported: true },
   { value: "smolvla", label: "SmolVLA", supported: true },
-  { value: "pi0", label: "Pi0", supported: false, comingSoon: true },
-  { value: "pi05", label: "Pi0.5", supported: false, comingSoon: true },
-  { value: "gr00t_n1_5", label: "GR00T N1.5", supported: false, comingSoon: true },
+  { value: "pi0", label: "Pi0", supported: true },
+  { value: "pi05", label: "Pi0.5", supported: true },
+  { value: "gr00t_n1_5", label: "GR00T N1.5", supported: true },
 ] as const;
 
 // Camera mapping: our UI names → Qualia camera slots
@@ -122,9 +122,10 @@ export function formatPhaseDuration(seconds: number): string {
 export const INFERENCE_MODELS = [
   { value: "act", label: "ACT", supported: true },
   { value: "smolvla", label: "SmolVLA", supported: true },
-  { value: "diffusion", label: "Diffusion Policy", supported: false },
-  { value: "tdmpc", label: "TD-MPC", supported: false },
-  { value: "vqbet", label: "VQ-BeT", supported: false },
+  { value: "diffusion", label: "Diffusion Policy", supported: true },
+  { value: "tdmpc", label: "TD-MPC", supported: true },
+  { value: "vqbet", label: "VQ-BeT", supported: true },
+  { value: "dino_dt", label: "DINO Diffusion Transformer", supported: true },
 ] as const;
 
 // API start response

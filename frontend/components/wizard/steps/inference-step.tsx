@@ -224,7 +224,7 @@ export function InferenceStep() {
     config.task.trim() !== "" &&
     config.numEpisodes > 0 &&
     config.episodeTimeS > 0 &&
-    (config.modelType === "act" || config.modelType === "smolvla");
+    INFERENCE_MODELS.some((m) => m.value === config.modelType && m.supported);
 
   async function handleStart() {
     setStarting(true);
