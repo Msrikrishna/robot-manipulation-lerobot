@@ -158,6 +158,9 @@ if _env_depth and _env_depth not in DEPTH_MODELS:
     }
 DEFAULT_DEPTH_KEY = _env_depth or "dinov2-nyu-base"
 
+# Model used by the live-camera tab: smallest metric-indoor head (fast on MPS).
+LIVE_DEPTH_KEY = "depth-anything-v2-metric-indoor-small"
+
 
 def depth_repo(key: str) -> str:
     return DEPTH_MODELS.get(key, DEPTH_MODELS[DEFAULT_DEPTH_KEY])["repo"]
@@ -760,6 +763,7 @@ def config():
         "default_pca_model": "vits16",
         "depth_models": _depth_model_list(),
         "default_depth_model": DEFAULT_DEPTH_KEY,
+        "live_depth_model": LIVE_DEPTH_KEY,
         "device": device(),
         "colormaps": ["turbo", "magma", "gray"],
     }
@@ -917,6 +921,40 @@ async def api_depth_recolor(
     out = side_by_side(orig, depth_img) if side_by_side_out else depth_img
     info["working_res"] = f"{orig.width}x{orig.height}"
     return {"image": to_b64_png(out), "info": info}
+
+
+@app.post("/api/depth_frame")
+async def api_depth_frame(
+    image: UploadFile = File(...),
+    colormap: str = Form("turbo"),
+    gamma: float = Form(1.0),
+    near: float = Form(0.0),
+    far: float = Form(0.0),
+    pct_low: float = Form(2.0),
+    pct_high: float = Form(98.0),
+    max_side: int = Form(320),
+):
+    """One frame of the live-camera depth stream: fixed to the small metric
+    indoor head, small max_side for speed, serialized through _INFER_LOCK so
+    overlapping frames don't fight over the device. No depth caching (frames are
+    transient)."""
+    repo = DEPTH_MODELS[LIVE_DEPTH_KEY]["repo"]
+    if not _is_cached(repo):
+        return JSONResponse(
+            {"error": "live model not downloaded", "needs_download": True,
+             "model": LIVE_DEPTH_KEY}, status_code=409,
+        )
+    img = read_image(await image.read(), max_side)
+    t0 = time.time()
+    try:
+        async with _INFER_LOCK:
+            depth_img, info, _, _ = await run_in_threadpool(
+                run_depth, img, colormap, LIVE_DEPTH_KEY, pct_low, pct_high, near, far, gamma
+            )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    info["ms"] = round((time.time() - t0) * 1000)
+    return {"image": to_b64_png(depth_img), "info": info}
 
 
 @app.post("/api/depth_pca")

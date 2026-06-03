@@ -138,6 +138,7 @@
     <div class="tabs">
       <button id="tabPca" class="active" onclick="setMode('pca')">PCA features</button>
       <button id="tabDepth" onclick="setMode('depth')">Depth</button>
+      <button id="tabLive" onclick="setMode('live')">Live depth</button>
     </div>
 
     <div class="drop" id="drop">
@@ -237,13 +238,54 @@
       </div>
     </div>
 
-    <div class="control">
+    <!-- LIVE camera controls -->
+    <div id="liveControls" style="display:none">
+      <div class="control">
+        <label>Camera</label>
+        <select id="liveCam"></select>
+        <div class="desc">Pick a connected camera. Grant the browser camera permission when asked.</div>
+      </div>
+      <div class="control" id="liveModelWrap">
+        <div class="desc" id="liveModelStatus" style="margin-bottom:8px"></div>
+        <button class="btn secondary" id="liveDownloadBtn" style="display:none" onclick="downloadLiveModel()">⬇︎ Download model (99 MB)</button>
+        <div id="liveProgress" style="display:none; margin-top:10px">
+          <div style="height:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; overflow:hidden">
+            <div id="liveBar" style="height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--accent-2)); transition:width .2s"></div>
+          </div>
+          <div class="desc" id="liveProgressText" style="margin-top:6px"></div>
+        </div>
+      </div>
+      <div class="control">
+        <label>Stream resolution <span class="val" id="liveResV">320</span> px</label>
+        <input type="range" id="liveRes" min="160" max="512" step="32" value="320" />
+        <div class="desc">Longest side sent per frame. Lower = higher FPS, coarser depth.</div>
+      </div>
+      <div class="control">
+        <label>Colormap <span class="val" id="liveCmapV">turbo</span></label>
+        <select id="liveCmap"></select>
+      </div>
+      <div class="control">
+        <label>Depth window (m) <span class="val" id="liveRangeV">auto</span></label>
+        <div class="row">
+          <input type="number" id="liveNear" placeholder="near m" step="0.05" min="0" />
+          <input type="number" id="liveFar" placeholder="far m" step="0.05" min="0" />
+        </div>
+        <div class="desc">Clamp to a metres window (e.g. 0.3 → 1.5) for stable, high-contrast live depth.</div>
+      </div>
+      <div class="control">
+        <label>Gamma <span class="val" id="liveGammaV">1.00</span></label>
+        <input type="range" id="liveGamma" min="0.3" max="2.5" step="0.05" value="1" />
+      </div>
+      <button class="btn" id="liveToggle" onclick="toggleLive()">▶ Start camera</button>
+    </div>
+
+    <div class="control" id="maxSideControl">
       <label>Max input resolution <span class="val" id="maxSideV">1024</span> px</label>
       <input type="range" id="maxSide" min="256" max="1536" step="64" value="1024" />
       <div class="desc">Preprocess: downscale the upload so its longest side ≤ this before the model runs. Lower = much faster / cheaper. Large photos are expensive without this.</div>
     </div>
 
-    <div class="control switch">
+    <div class="control switch" id="sbsControl">
       <span>Side-by-side with original</span>
       <input type="checkbox" id="sbs" />
     </div>
@@ -427,9 +469,18 @@ function setMode(m) {
   MODE = m;
   $('tabPca').classList.toggle('active', m === 'pca');
   $('tabDepth').classList.toggle('active', m === 'depth');
+  $('tabLive').classList.toggle('active', m === 'live');
+  const live = m === 'live';
   $('pcaControls').style.display = m === 'pca' ? 'block' : 'none';
   $('depthControls').style.display = m === 'depth' ? 'block' : 'none';
-  $('modeBadge').textContent = m === 'pca' ? 'PCA features' : 'Depth';
+  $('liveControls').style.display = live ? 'block' : 'none';
+  // The upload-based controls don't apply to the live camera tab.
+  $('drop').style.display = live ? 'none' : 'block';
+  $('maxSideControl').style.display = live ? 'none' : 'block';
+  $('sbsControl').style.display = live ? 'none' : 'block';
+  $('run').style.display = live ? 'none' : 'block';
+  $('modeBadge').textContent = m === 'pca' ? 'PCA features' : (live ? 'Live depth' : 'Depth');
+  if (live) initLive(); else stopLive();
   updateResultGammaVis();
 }
 
@@ -673,6 +724,178 @@ $('dGamma').addEventListener('input', e => setGamma(e.target.value));
 function updateResultGammaVis() {
   const show = MODE === 'depth' && $('depthView').value === 'depth' && !!LAST_TOKEN;
   $('resultGamma').style.display = show ? 'block' : 'none';
+}
+
+// ===== Live camera depth =====
+let LIVE_KEY = null;        // model key (from config)
+let liveOn = false;
+let liveStream = null;
+let liveVideo = null;
+let liveCanvas = null;
+let liveInited = false;
+let liveFpsEMA = 0;
+
+// live control labels
+bind('liveRes', 'liveResV');
+bind('liveGamma', 'liveGammaV', x => Number(x).toFixed(2));
+$('liveCmap').addEventListener('change', e => $('liveCmapV').textContent = e.target.value);
+const liveRangeLabel = () => {
+  const n = $('liveNear').value, f = $('liveFar').value;
+  $('liveRangeV').textContent = (n || f) ? `${n || 'min'} – ${f || 'max'}` : 'auto';
+};
+$('liveNear').addEventListener('input', liveRangeLabel);
+$('liveFar').addEventListener('input', liveRangeLabel);
+
+function liveModelEntry() { return DEPTH_MODELS.find(m => m.key === LIVE_KEY); }
+
+async function initLive() {
+  LIVE_KEY = CFG.live_depth_model;
+  // populate colormap dropdown once
+  if (!$('liveCmap').options.length) {
+    CFG.colormaps.forEach(c => {
+      const o = document.createElement('option'); o.value = c; o.textContent = c;
+      $('liveCmap').appendChild(o);
+    });
+  }
+  liveInited = true;
+  ensureLiveModel();                 // set status/button synchronously first
+  $('outCap').textContent = 'Live depth';
+  await populateCameras();           // may await permission/enumeration
+}
+
+// Enumerate connected cameras. Labels are only exposed after permission is
+// granted, so names may be generic until the first Start.
+async function populateCameras() {
+  const sel = $('liveCam');
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const prev = sel.value;
+    sel.innerHTML = '';
+    cams.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label || `Camera ${i + 1}`;
+      sel.appendChild(o);
+    });
+    if (prev) sel.value = prev;
+    if (!cams.length) sel.innerHTML = '<option>No camera found</option>';
+  } catch (e) {
+    sel.innerHTML = '<option>Camera access blocked</option>';
+  }
+}
+
+function ensureLiveModel() {
+  const m = liveModelEntry();
+  const ready = m && m.cached;
+  $('liveModelStatus').innerHTML = ready
+    ? '✓ Model ready: <b style="color:var(--accent-2)">' + m.label + '</b>'
+    : '⚠ <b>' + (m ? m.label : 'live model') + '</b> (99 MB) must be downloaded before streaming.';
+  $('liveDownloadBtn').style.display = ready ? 'none' : 'block';
+  $('liveToggle').disabled = !ready;
+  $('liveToggle').style.opacity = ready ? '1' : '.5';
+}
+
+function downloadLiveModel() {
+  const btn = $('liveDownloadBtn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Downloading…';
+  $('liveProgress').style.display = 'block';
+  const es = new EventSource('/api/depth/download?model=' + encodeURIComponent(LIVE_KEY));
+  es.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.error) { es.close(); btn.disabled = false; btn.innerHTML = '⬇︎ Retry'; $('liveProgressText').textContent = '⚠ ' + d.error; return; }
+    $('liveBar').style.width = (d.pct || 0) + '%';
+    $('liveProgressText').textContent = d.total ? `${d.pct}% — ${fmtMB(d.downloaded)} / ${fmtMB(d.total)} MB` : `${d.pct}%`;
+    if (d.done) {
+      es.close();
+      const m = liveModelEntry(); if (m) m.cached = true;
+      $('liveProgressText').textContent = 'done ✓';
+      ensureLiveModel();
+    }
+  };
+  es.onerror = () => { es.close(); btn.disabled = false; btn.innerHTML = '⬇︎ Retry'; $('liveProgressText').textContent = '⚠ interrupted'; };
+}
+
+function toggleLive() { liveOn ? stopLive() : startLive(); }
+
+async function startLive() {
+  const m = liveModelEntry();
+  if (!m || !m.cached) { ensureLiveModel(); return; }
+  $('err').textContent = '';
+  try {
+    const id = $('liveCam').value;
+    liveStream = await navigator.mediaDevices.getUserMedia({
+      video: id ? { deviceId: { exact: id } } : true, audio: false,
+    });
+  } catch (e) {
+    $('err').textContent = '⚠ Could not open camera: ' + e.message;
+    return;
+  }
+  await populateCameras();                 // labels available now
+  if (!liveVideo) {
+    liveVideo = document.createElement('video');
+    liveVideo.autoplay = true; liveVideo.muted = true; liveVideo.playsInline = true;
+    liveVideo.style.width = '100%'; liveVideo.style.borderRadius = '6px'; liveVideo.style.display = 'block';
+    liveCanvas = document.createElement('canvas');
+  }
+  liveVideo.srcObject = liveStream;
+  $('inputSlot').innerHTML = ''; $('inputSlot').appendChild(liveVideo);
+  await liveVideo.play().catch(() => {});
+  liveOn = true;
+  $('liveToggle').innerHTML = '⏸ Stop camera';
+  $('download').style.display = 'none';
+  liveLoop();
+}
+
+function stopLive() {
+  liveOn = false;
+  if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
+  if (liveVideo) liveVideo.srcObject = null;
+  $('liveToggle').innerHTML = '▶ Start camera';
+}
+
+function grabFrame() {
+  const cap = Number($('liveRes').value);
+  const vw = liveVideo.videoWidth, vh = liveVideo.videoHeight;
+  if (!vw || !vh) return null;
+  const scale = Math.min(1, cap / Math.max(vw, vh));
+  const w = Math.round(vw * scale), h = Math.round(vh * scale);
+  liveCanvas.width = w; liveCanvas.height = h;
+  liveCanvas.getContext('2d').drawImage(liveVideo, 0, 0, w, h);
+  return new Promise(res => liveCanvas.toBlob(res, 'image/jpeg', 0.7));
+}
+
+async function liveLoop() {
+  if (!liveOn) return;
+  const t0 = performance.now();
+  try {
+    const blob = await grabFrame();
+    if (blob) {
+      const fd = new FormData();
+      fd.append('image', blob, 'frame.jpg');
+      fd.append('colormap', $('liveCmap').value);
+      fd.append('gamma', $('liveGamma').value);
+      fd.append('near', $('liveNear').value || 0);
+      fd.append('far', $('liveFar').value || 0);
+      fd.append('max_side', $('liveRes').value);
+      const res = await fetch('/api/depth_frame', { method: 'POST', body: fd });
+      if (res.status === 409) {                 // model vanished from cache
+        const m = liveModelEntry(); if (m) m.cached = false;
+        stopLive(); ensureLiveModel();
+        $('err').textContent = '⚠ Live model not available — download it first.';
+        return;
+      }
+      const data = await res.json();
+      if (res.ok && data.image) {
+        $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+        const dt = performance.now() - t0;
+        liveFpsEMA = liveFpsEMA ? liveFpsEMA * 0.8 + (1000 / dt) * 0.2 : 1000 / dt;
+        renderStats({ fps: liveFpsEMA.toFixed(1), infer_ms: data.info.ms,
+                      shown_range: data.info.shown_range,
+                      cm_per_step: data.info.cm_per_color_step ?? '—' });
+      }
+    }
+  } catch (e) { /* drop this frame, keep going */ }
+  if (liveOn) requestAnimationFrame(liveLoop);
 }
 
 function downloadOut() {
