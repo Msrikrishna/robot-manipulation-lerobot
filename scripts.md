@@ -98,3 +98,67 @@ npm install    ->  same idea, but for the JS frontend (into node_modules/)
   The UI still loads fine without hardware — only setup/calibrate/teleop will error.
 - **Training is remote.** The training tab calls the **Qualia** cloud GPU service, not your
   local machine.
+
+---
+
+## DINO Diffusion Transformer (`dino_dt`) — train & infer
+
+Custom native policy (frozen DINOv3 ViT + cross-attention diffusion transformer) added to
+`lerobot-MakerMods`. Trains/infers through the stock lerobot CLI; **not** available on the
+Qualia training tab (custom type), so train it locally on a GPU.
+
+Prereqs (one-time):
+```bash
+huggingface-cli login   # DINOv3 weights are GATED — accept the license on the model page
+```
+
+### Train (Nvidia H100 / any CUDA GPU)
+```bash
+lerobot-train \
+  --policy.type=dino_dt \
+  --policy.dino_model=facebook/dinov3-vits16-pretrain-lvd1689m \
+  --policy.device=cuda \
+  --policy.use_amp=true \          # bf16/AMP — big speedup on H100
+  --batch_size=64 \                # H100 has headroom for 128–256 with ViT-S
+  --num_workers=16 \
+  --steps=50000 \                  # ~50 episodes; see guidance below
+  --save_freq=5000 \
+  --dataset.repo_id=<you>/so101_task \
+  --output_dir=outputs/train/so101_dino_dt
+```
+
+### Infer (Mac / MPS — feasible with ViT-S)
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE lerobot-record \
+  --robot.type=so101_follower --robot.port=<PORT> \
+  --robot.id=single_follower \
+  --robot.cameras='{"front_cam":{"type":"opencv","index_or_path":0,"width":640,"height":480,"fps":30}}' \
+  --policy.path=outputs/train/so101_dino_dt/checkpoints/last/pretrained_model \
+  --policy.device=mps \
+  --policy.num_inference_steps=8 \   # lower = snappier (default 16); DDIM handles few steps
+  --dataset.repo_id=<you>/eval_dino_dt \
+  --dataset.single_task="<same task string used in training>"
+```
+Or in the app: select **DINO Diffusion Transformer** in the inference tab and point it at the
+checkpoint dir. `huggingface-cli login` is needed at inference too (the backbone is rebuilt on load).
+
+### How long to train (rule of thumb)
+- Think in **epochs**: at batch 64, one epoch ≈ `num_frames / 64` steps.
+- **~50 episodes (~30k frames): train ~50k steps** (start evaluating checkpoints at ~30k).
+  Wall-clock on H100 + ViT-S: ~1.5–4 h (minutes with feature caching, if added).
+- Checkpoint every 5k; **pick the best by on-robot success, not lowest loss** (no sim eval for
+  real SO101 data).
+- Data is the floor: with 50 episodes expect usable-but-fragile. Adding varied demos beats
+  training longer.
+
+### Knobs
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--policy.dino_model` | dinov3-vits16 | any DINOv3 **ViT** (S/B/L/H+/7B) or DINOv2/ViT; NOT ConvNeXt |
+| `--policy.image_size` | 256 | keep a multiple of the patch size (16 for these ViTs) |
+| `--policy.num_inference_steps` | 16 | inference DDIM steps; lower = faster |
+| `--policy.horizon` / `n_action_steps` / `n_obs_steps` | 16 / 8 / 2 | action chunking |
+| `--policy.device` | auto | `cuda` (train) / `mps` (Mac infer) |
+
+Notes: ViT-S infers OK on Mac/MPS (~10–15 Hz); ViT-B+ should infer on a GPU. macOS runs need
+`KMP_DUPLICATE_LIB_OK=TRUE` to avoid an OpenMP double-init abort.
