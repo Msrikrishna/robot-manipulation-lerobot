@@ -15,9 +15,9 @@ import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 
-# Default to an ungated ViT-B/16 mirror so it runs without HF access approval.
-# Switch to "facebook/dinov3-vits16-pretrain-lvd1689m" once access is granted.
-MODEL_ID = os.environ.get("DINOV3_MODEL", "rA9del/dinov3b16")
+# Official gated DINOv3 ViT-B/16 (768-dim). Requires HF access: accept the
+# license on the model page and run `huggingface-cli login` once.
+MODEL_ID = os.environ.get("DINOV3_MODEL", "facebook/dinov3-vitb16-pretrain-lvd1689m")
 
 
 def load_image(path: str | None) -> Image.Image:

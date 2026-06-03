@@ -1,15 +1,22 @@
-"""Monocular depth from a single RGB image with Depth Anything V2.
+"""Monocular depth from a single RGB image with a DPT depth head.
 
-Depth Anything V2 = a DINOv2 backbone + DPT head, trained on ~62M depth images.
-Ungated, runs on Apple Silicon (MPS). Writes a side-by-side [original | depth] PNG.
+Several heads are selectable by short key (see MODELS). Each is a frozen ViT
+backbone (DINOv3 / DINOv2) with a DPT depth head, run through the HF
+depth-estimation pipeline. Runs on Apple Silicon (MPS). Writes a side-by-side
+[original | depth] PNG.
+
+Some DINOv3 heads are gated: accept the license on the model page and run
+`huggingface-cli login` once before first use.
 
 Usage:
-    python depth_estimation.py path/to/img.jpg
-    python depth_estimation.py path/to/img.jpg --out outputs/depth.png
+    python depth_estimation.py img.jpg                       # default model
+    python depth_estimation.py img.jpg --model da2-indoor    # pick by key
+    python depth_estimation.py img.jpg --model facebook/...  # or raw repo id
+    python depth_estimation.py img.jpg --out outputs/depth.png
+    python depth_estimation.py --list                        # list model keys
 
 Env:
-    DEPTH_MODEL  override model id (default: Depth-Anything-V2-Small-hf)
-                 bigger: depth-anything/Depth-Anything-V2-Base-hf / -Large-hf
+    DEPTH_MODEL  default model key or repo id (default: dinov2-nyu-base)
 """
 import os
 import sys
@@ -19,7 +26,27 @@ import torch
 from PIL import Image
 from transformers import pipeline
 
-MODEL_ID = os.environ.get("DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Small-hf")
+# key -> (repo id, metric?). Metric heads output meters (larger = farther);
+# the rest are relative inverse depth (larger = nearer).
+MODELS = {
+    "dinov3-chmv2": ("facebook/dinov3-vitl16-chmv2-dpt-head", True),
+    "dinov2-nyu-small": ("facebook/dpt-dinov2-small-nyu", True),
+    "dinov2-nyu-base": ("facebook/dpt-dinov2-base-nyu", True),
+    "dinov2-nyu-giant": ("facebook/dpt-dinov2-giant-nyu", True),
+    "da2-large": ("depth-anything/Depth-Anything-V2-Large-hf", False),
+    "da2-indoor": ("depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf", True),
+    "da2-outdoor": ("depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf", True),
+}
+
+
+def resolve_model(name: str) -> tuple[str, bool]:
+    """Map a short key or raw repo id to (repo_id, metric?)."""
+    if name in MODELS:
+        return MODELS[name]
+    return name, False  # raw repo id; assume relative unless known
+
+
+DEFAULT_MODEL = os.environ.get("DEPTH_MODEL", "dinov2-nyu-base")
 
 # perceptually-uniform-ish colormap (turbo) as 8 anchor stops, linearly interpolated
 _TURBO = np.array(
@@ -44,28 +71,42 @@ def colorize(depth: np.ndarray) -> Image.Image:
 
 
 def main() -> None:
+    if "--list" in sys.argv:
+        print("available --model keys:")
+        for k, (repo, metric) in MODELS.items():
+            print(f"  {k:18s} {repo}  ({'metric' if metric else 'relative'})")
+        return
+
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
-        print("usage: python depth_estimation.py <image> [--out path.png]")
+        print("usage: python depth_estimation.py <image> [--model key] [--out path.png]")
+        print("       python depth_estimation.py --list")
         sys.exit(1)
     img_path = args[0]
     out_path = "outputs/depth.png"
     if "--out" in sys.argv:
         out_path = sys.argv[sys.argv.index("--out") + 1]
+    model_name = DEFAULT_MODEL
+    if "--model" in sys.argv:
+        model_name = sys.argv[sys.argv.index("--model") + 1]
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
+    repo, metric = resolve_model(model_name)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"model: {MODEL_ID} | device: {device}")
+    print(f"model: {repo} ({'metric' if metric else 'relative'}) | device: {device}")
 
-    pipe = pipeline("depth-estimation", model=MODEL_ID, device=device)
+    pipe = pipeline("depth-estimation", model=repo, device=device)
 
     img = Image.open(img_path).convert("RGB")
     result = pipe(img)
-    # relative inverse-depth: brighter/warmer = nearer
     depth = result["predicted_depth"].squeeze().float().cpu().numpy()
-    print(f"depth map: {depth.shape}, raw range [{depth.min():.2f}, {depth.max():.2f}]")
+    unit = "meters" if metric else "relative inverse-depth"
+    print(f"depth map: {depth.shape}, raw range [{depth.min():.2f}, {depth.max():.2f}] ({unit})")
 
-    depth_img = colorize(depth).resize(img.size, Image.BILINEAR)
+    # Colorize so warmer = nearer regardless of model convention. Metric heads
+    # give distance (larger = farther), so invert those before colorizing.
+    depth_for_color = -depth if metric else depth
+    depth_img = colorize(depth_for_color).resize(img.size, Image.BILINEAR)
     canvas = Image.new("RGB", (img.width * 2 + 10, img.height), "white")
     canvas.paste(img, (0, 0))
     canvas.paste(depth_img, (img.width + 10, 0))

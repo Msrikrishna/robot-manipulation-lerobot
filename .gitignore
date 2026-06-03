@@ -9,6 +9,7 @@ venv/
 # DINO inference local artifacts (keep scripts + sample outputs, ignore heavy stuff)
 dino-inference/.venv/
 dino-inference/models/
+dino-inference/outputs/
 
 # OS / editor
 .DS_Store
@@ -18,3 +19,9 @@ dino-inference/models/
 
 # Node
 node_modules/
+
+# Playwright MCP browser artifacts (snapshots, console logs, screenshots)
+.playwright-mcp/
+
+# Local Claude settings (machine-specific, not for sharing)
+.claude/settings.local.json

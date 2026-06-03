@@ -1,5 +1,7 @@
 torch
 torchvision
-transformers
+# DINOv3 backbones need >=4.56; the CHMv2 DPT depth head (depth_estimation.py)
+# needs a newer build still — use the latest release if depth loading fails.
+transformers>=4.57
 pillow
 huggingface_hub

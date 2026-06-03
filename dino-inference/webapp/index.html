@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DINOv3 Playground</title>
+<style>
+  :root {
+    --bg: #0d1017;
+    --panel: #161b26;
+    --panel-2: #1d2433;
+    --border: #2a3242;
+    --text: #e6e9ef;
+    --muted: #8b94a7;
+    --accent: #6ea8fe;
+    --accent-2: #7ef0c0;
+    --danger: #ff6b6b;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #1a2030 0%, var(--bg) 55%);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 22px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .badge {
+    font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 10px;
+  }
+  .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 22px; padding: 22px 28px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 14px; }
+
+  /* mode tabs */
+  .tabs { display: flex; background: var(--panel-2); border-radius: 10px; padding: 4px; margin-bottom: 18px; }
+  .tabs button {
+    flex: 1; border: 0; background: transparent; color: var(--muted);
+    padding: 9px 0; border-radius: 7px; cursor: pointer; font-size: 14px; font-weight: 600;
+    transition: .15s;
+  }
+  .tabs button.active { background: var(--accent); color: #06101f; }
+
+  /* dropzone */
+  .drop {
+    border: 1.5px dashed var(--border); border-radius: var(--radius);
+    padding: 22px; text-align: center; color: var(--muted); cursor: pointer;
+    transition: .15s; background: var(--panel-2);
+  }
+  .drop.hover { border-color: var(--accent); color: var(--text); background: #1b2740; }
+  .drop img { max-width: 100%; max-height: 160px; border-radius: 8px; display: block; margin: 0 auto; }
+  .drop .hint { font-size: 13px; margin-top: 8px; }
+
+  .control { margin: 16px 0; }
+  .control label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 7px; color: var(--text); }
+  .control label .val { color: var(--accent-2); font-variant-numeric: tabular-nums; }
+  .control .desc { font-size: 11.5px; color: var(--muted); margin-top: 5px; line-height: 1.35; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  select, input[type=number] {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); padding: 9px 10px; border-radius: 8px; font-size: 13px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .switch { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+  .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  .btn {
+    width: 100%; margin-top: 8px; padding: 12px; border: 0; border-radius: 10px;
+    background: linear-gradient(180deg, var(--accent), #4d8ef0); color: #06101f;
+    font-weight: 700; font-size: 14px; cursor: pointer; transition: .15s;
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+
+  /* result */
+  .result { min-height: 360px; display: flex; flex-direction: column; }
+  .stage {
+    flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 700px) { .stage { grid-template-columns: 1fr; } }
+  .frame { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+  .frame .cap { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .frame img { width: 100%; border-radius: 6px; display: block; }
+  .placeholder { color: var(--muted); font-size: 14px; text-align: center; padding: 60px 20px; }
+
+  /* depth model info card */
+  .model-info {
+    margin-top: 10px; padding: 11px 12px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 9px;
+    display: grid; grid-template-columns: auto 1fr; gap: 4px 12px;
+    font-size: 12px; line-height: 1.4;
+  }
+  .model-info .mi-k { color: var(--muted); }
+  .model-info .mi-v { color: var(--text); }
+  .model-info .mi-purpose {
+    grid-column: 1 / -1; margin-top: 6px; padding-top: 8px;
+    border-top: 1px solid var(--border); color: var(--accent-2); font-size: 11.5px;
+  }
+
+  .stats { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-size: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+  .chip b { color: var(--accent-2); }
+  .err { color: var(--danger); font-size: 13px; margin-top: 10px; }
+
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #06101f; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🦕 DINOv3 Playground</h1>
+  <span class="badge" id="deviceBadge">device: …</span>
+  <span class="badge" id="modeBadge">PCA features</span>
+</header>
+
+<div class="wrap">
+  <!-- CONTROLS -->
+  <div class="panel">
+    <div class="tabs">
+      <button id="tabPca" class="active" onclick="setMode('pca')">PCA features</button>
+      <button id="tabDepth" onclick="setMode('depth')">Depth</button>
+    </div>
+
+    <div class="drop" id="drop">
+      <div id="dropEmpty">
+        <div style="font-size:30px">🖼️</div>
+        <div class="hint">Drag &amp; drop an image<br/>or click to browse</div>
+      </div>
+      <img id="preview" style="display:none" />
+    </div>
+    <input type="file" id="file" accept="image/*" hidden />
+
+    <!-- PCA controls -->
+    <div id="pcaControls">
+      <div class="control">
+        <label>Backbone <span class="val" id="pcaModelV"></span></label>
+        <select id="pcaModel"></select>
+        <div class="desc">Bigger backbone = richer features, slower.</div>
+      </div>
+      <div class="control">
+        <label>Input size (longest side) <span class="val" id="sizeV">448</span></label>
+        <input type="range" id="size" min="112" max="1024" step="16" value="448" />
+        <div class="desc">Drives the patch grid: more patches = finer feature map, more memory. Snapped to /16.</div>
+      </div>
+      <div class="control">
+        <label>Robust clip — low pct <span class="val" id="lowV">2</span></label>
+        <input type="range" id="pctLow" min="0" max="20" step="1" value="2" />
+      </div>
+      <div class="control">
+        <label>Robust clip — high pct <span class="val" id="highV">98</span></label>
+        <input type="range" id="pctHigh" min="80" max="100" step="1" value="98" />
+        <div class="desc">Per-channel percentile stretch of the 3 PCA components → RGB contrast.</div>
+      </div>
+      <div class="control switch">
+        <span>Remove background</span>
+        <input type="checkbox" id="removeBg" />
+      </div>
+      <div class="control" id="bgThreshWrap" style="display:none">
+        <label>Background threshold <span class="val" id="bgV">0.50</span></label>
+        <input type="range" id="bgThreshold" min="0" max="1" step="0.02" value="0.5" />
+        <div class="desc">Patches below this on PCA component 1 are blacked out.</div>
+      </div>
+    </div>
+
+    <!-- DEPTH controls -->
+    <div id="depthControls" style="display:none">
+      <div class="control">
+        <label>Depth model <span class="val" id="depthModelV"></span></label>
+        <select id="depthModel"></select>
+        <div class="model-info" id="depthInfo"></div>
+      </div>
+      <div class="control" id="depthDownloadWrap" style="display:none">
+        <button class="btn secondary" id="depthDownloadBtn" onclick="downloadDepthModel()">⬇︎ Download model</button>
+        <div id="depthProgress" style="display:none; margin-top:10px">
+          <div style="height:8px; background:var(--panel-2); border:1px solid var(--border); border-radius:6px; overflow:hidden">
+            <div id="depthBar" style="height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--accent-2)); transition:width .2s"></div>
+          </div>
+          <div class="desc" id="depthProgressText" style="margin-top:6px">starting…</div>
+        </div>
+      </div>
+      <div class="control">
+        <label>View <span class="val" id="depthViewV">depth map</span></label>
+        <select id="depthView">
+          <option value="depth">Depth map</option>
+          <option value="pca">Feature PCA</option>
+        </select>
+        <div class="desc">“Feature PCA” projects the model’s internal depth embeddings to RGB (3 PCA comps) — a peek at what the head encodes vs. the final depth.</div>
+      </div>
+      <div class="control" id="cmapWrap">
+        <label>Colormap <span class="val" id="cmapV">turbo</span></label>
+        <select id="cmap"></select>
+        <div class="desc">Brighter/warmer = nearer (works for both relative and metric models).</div>
+      </div>
+    </div>
+
+    <div class="control">
+      <label>Max input resolution <span class="val" id="maxSideV">1024</span> px</label>
+      <input type="range" id="maxSide" min="256" max="1536" step="64" value="1024" />
+      <div class="desc">Preprocess: downscale the upload so its longest side ≤ this before the model runs. Lower = much faster / cheaper. Large photos are expensive without this.</div>
+    </div>
+
+    <div class="control switch">
+      <span>Side-by-side with original</span>
+      <input type="checkbox" id="sbs" />
+    </div>
+
+    <button class="btn" id="run" disabled onclick="generate()">Generate</button>
+    <div class="err" id="err"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="panel result">
+    <h2>Result</h2>
+    <div class="stage">
+      <div class="frame">
+        <div class="cap">Input</div>
+        <div id="inputSlot"><div class="placeholder">No image yet</div></div>
+      </div>
+      <div class="frame">
+        <div class="cap" id="outCap">Output</div>
+        <div id="outputSlot"><div class="placeholder">Generate to see results</div></div>
+      </div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <button class="btn secondary" id="download" style="display:none" onclick="downloadOut()">⬇︎ Download PNG</button>
+  </div>
+</div>
+
+<script>
+let MODE = 'pca';
+let FILE = null;
+let LAST_OUT = null;
+let CFG = null;
+
+const $ = id => document.getElementById(id);
+
+async function init() {
+  CFG = await (await fetch('/api/config')).json();
+  $('deviceBadge').textContent = 'device: ' + CFG.device;
+  const sel = $('pcaModel');
+  CFG.pca_models.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m;
+    if (m === CFG.default_pca_model) o.selected = true;
+    sel.appendChild(o);
+  });
+  $('pcaModelV').textContent = sel.value;
+  const cm = $('cmap');
+  CFG.colormaps.forEach(c => {
+    const o = document.createElement('option');
+    o.value = c; o.textContent = c; cm.appendChild(o);
+  });
+  populateDepthModels(CFG.depth_models, CFG.default_depth_model);
+}
+
+// ---- depth model dropdown + on-demand download ----
+let DEPTH_MODELS = [];
+// Per-model download state, keyed by model key. Keeping each download's
+// EventSource + progress here (rather than in shared DOM vars) means several
+// models can download at once and switching the dropdown shows the right one
+// without clobbering the others.
+const DOWNLOADS = {};
+const fmtSize = mb => mb == null ? '—' : (mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : mb + ' MB');
+const fmtMB = b => (b / 1048576).toFixed(0);
+
+function populateDepthModels(models, defaultKey) {
+  DEPTH_MODELS = models || [];
+  const sel = $('depthModel');
+  const keep = sel.value;
+  sel.innerHTML = '';
+  DEPTH_MODELS.forEach(m => sel.appendChild(makeDepthOption(m)));
+  sel.value = (defaultKey && DEPTH_MODELS.some(m => m.key === defaultKey)) ? defaultKey
+    : (keep || (DEPTH_MODELS[0] && DEPTH_MODELS[0].key));
+  onDepthModelChange();
+}
+
+function makeDepthOption(m) {
+  const o = document.createElement('option');
+  o.value = m.key;
+  o.textContent = (m.cached ? '● ' : '○ ') + m.label + '  (' + fmtSize(m.size_mb) + ')';
+  return o;
+}
+
+function currentDepthModel() {
+  return DEPTH_MODELS.find(m => m.key === $('depthModel').value);
+}
+
+// Update just one option's label (e.g. flip ○→● when a download finishes)
+// without rebuilding the <select> and disturbing other in-flight rows.
+function refreshDepthOption(key) {
+  const m = DEPTH_MODELS.find(x => x.key === key);
+  const opt = [...$('depthModel').options].find(o => o.value === key);
+  if (m && opt) opt.textContent = (m.cached ? '● ' : '○ ') + m.label + '  (' + fmtSize(m.size_mb) + ')';
+}
+
+function onDepthModelChange() {
+  const m = currentDepthModel();
+  if (!m) return;
+  $('depthModelV').textContent = m.metric ? 'metric' : 'relative';
+  // Rich info card shown BEFORE any download so you know what you're fetching.
+  $('depthInfo').innerHTML = [
+    ['Size', fmtSize(m.size_mb)],
+    ['Output', m.metric ? 'metric (meters)' : 'relative (inverse depth)'],
+    ['Access', m.gated ? 'gated — needs HF login + license' : 'open'],
+    ['Backbone', m.backbone],
+    ['Trained on', m.dataset],
+    ['Status', m.cached ? '✓ downloaded' : 'not downloaded'],
+  ].map(([k, v]) => `<div class="mi-k">${k}</div><div class="mi-v">${v}</div>`).join('')
+    + `<div class="mi-purpose">${m.desc}</div>`;
+  renderDepthDownloadUI();
+}
+
+// Render the download button / progress bar for the *currently selected* model
+// from its stored state, so switching models never shows a stale bar.
+function renderDepthDownloadUI() {
+  const m = currentDepthModel();
+  if (!m) return;
+  const wrap = $('depthDownloadWrap'), prog = $('depthProgress'), btn = $('depthDownloadBtn');
+  if (m.cached) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  const st = DOWNLOADS[m.key];
+  if (!st) {                                   // idle, never started
+    prog.style.display = 'none';
+    btn.disabled = false;
+    btn.innerHTML = '⬇︎ Download model (' + fmtSize(m.size_mb) + ')';
+    return;
+  }
+  prog.style.display = 'block';
+  $('depthBar').style.width = (st.pct || 0) + '%';
+  if (st.error) {
+    btn.disabled = false;
+    btn.innerHTML = '⬇︎ Resume / retry';
+    $('depthProgressText').textContent = '⚠ ' + st.error;
+  } else if (st.done) {
+    $('depthBar').style.width = '100%';
+    btn.disabled = true;
+    btn.innerHTML = '✓ Downloaded';
+    $('depthProgressText').textContent = 'done ✓';
+  } else {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Downloading…';
+    $('depthProgressText').textContent = st.total
+      ? `${st.pct}% — ${fmtMB(st.downloaded)} / ${fmtMB(st.total)} MB`
+      : `${st.pct}% — starting…`;
+  }
+}
+
+function downloadDepthModel() {
+  const m = currentDepthModel();
+  if (!m || m.cached) return;
+  const key = m.key;
+  if (DOWNLOADS[key] && !DOWNLOADS[key].done) return;   // already running
+  $('err').textContent = '';
+  const st = { pct: 0, downloaded: 0, total: 0, done: false, error: null };
+  DOWNLOADS[key] = st;
+  renderDepthDownloadUI();
+
+  const es = new EventSource('/api/depth/download?model=' + encodeURIComponent(key));
+  st.es = es;
+  es.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.error) { st.error = d.error; st.done = true; es.close(); if ($('depthModel').value === key) renderDepthDownloadUI(); return; }
+    st.pct = d.pct || 0; st.downloaded = d.downloaded || 0; st.total = d.total || 0;
+    if (d.done) { st.done = true; es.close(); m.cached = true; refreshDepthOption(key); }
+    if ($('depthModel').value === key) renderDepthDownloadUI();
+  };
+  // Network/stream error (not a normal close). The server cancels the download
+  // on disconnect; mark it resumable so the button offers Resume.
+  es.onerror = () => {
+    if (st.done) return;
+    es.close(); st.error = 'connection lost — resume to continue'; st.done = true;
+    if ($('depthModel').value === key) renderDepthDownloadUI();
+  };
+}
+
+function setMode(m) {
+  MODE = m;
+  $('tabPca').classList.toggle('active', m === 'pca');
+  $('tabDepth').classList.toggle('active', m === 'depth');
+  $('pcaControls').style.display = m === 'pca' ? 'block' : 'none';
+  $('depthControls').style.display = m === 'depth' ? 'block' : 'none';
+  $('modeBadge').textContent = m === 'pca' ? 'PCA features' : 'Depth';
+}
+
+// live value labels
+const bind = (id, vid, fmt = x => x) => {
+  $(id).addEventListener('input', () => $(vid).textContent = fmt($(id).value));
+};
+bind('size', 'sizeV'); bind('pctLow', 'lowV'); bind('pctHigh', 'highV');
+bind('bgThreshold', 'bgV', x => Number(x).toFixed(2));
+bind('maxSide', 'maxSideV');
+$('pcaModel').addEventListener('change', e => $('pcaModelV').textContent = e.target.value);
+$('cmap').addEventListener('change', e => $('cmapV').textContent = e.target.value);
+$('depthModel').addEventListener('change', onDepthModelChange);
+$('depthView').addEventListener('change', e => {
+  $('depthViewV').textContent = e.target.value === 'pca' ? 'feature PCA' : 'depth map';
+  $('cmapWrap').style.display = e.target.value === 'pca' ? 'none' : 'block';
+});
+$('removeBg').addEventListener('change', e => $('bgThreshWrap').style.display = e.target.checked ? 'block' : 'none');
+
+// ---- dropzone ----
+const drop = $('drop');
+drop.addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+
+// Stop the browser from opening the file when a drop lands anywhere on the page
+// (this is the usual reason DnD "doesn't work" — the tab just navigates to the image).
+['dragover', 'drop'].forEach(ev =>
+  window.addEventListener(ev, e => { e.preventDefault(); }, false));
+
+['dragenter', 'dragover'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.add('hover'); }));
+drop.addEventListener('dragleave', e => {
+  // only un-highlight when truly leaving the dropzone, not when crossing a child
+  if (!drop.contains(e.relatedTarget)) drop.classList.remove('hover');
+});
+drop.addEventListener('drop', e => {
+  e.preventDefault(); e.stopPropagation();
+  drop.classList.remove('hover');
+  const dt = e.dataTransfer;
+  let f = dt.files && dt.files[0];
+  if (!f && dt.items) {                       // fallback for some browsers
+    for (const it of dt.items) { if (it.kind === 'file') { f = it.getAsFile(); break; } }
+  }
+  if (f) { loadFile(f); return; }
+  // No local file: maybe an image dragged from another web page/tab, which
+  // arrives as a URL (text/uri-list or an <img> in text/html) rather than a file.
+  const url = extractImageUrl(dt);
+  if (url) loadFromUrl(url);
+  else $('err').textContent = '⚠ No image found in the drop. Try dragging an image file, or an image from a web page.';
+});
+
+// Search engines wrap the real image in a redirect (Google Images gives
+// google.com/imgres?imgurl=…, Bing gives …?mediaurl=…). Pull the real one out.
+function unwrapImageUrl(u) {
+  try {
+    const p = new URL(u);
+    const inner = p.searchParams.get('imgurl') || p.searchParams.get('mediaurl');
+    if (inner && /^https?:\/\//i.test(inner)) return inner;
+  } catch (e) {}
+  return u;
+}
+
+// Pull a usable image URL out of a drop that carries no file. Collects every
+// candidate the browser offers, unwraps search-engine redirects, and returns
+// the first http(s) one. The backend proxy still falls back to og:image if a
+// page link sneaks through.
+function extractImageUrl(dt) {
+  const candidates = [];
+  const uriList = dt.getData('text/uri-list');   // standard for dragged links/images
+  if (uriList) uriList.split('\n').forEach(s => {
+    s = s.trim(); if (s && !s.startsWith('#')) candidates.push(s);
+  });
+  const html = dt.getData('text/html');          // some browsers only give an <img>
+  if (html) { const m = html.match(/<img[^>]+src=["']([^"']+)["']/i); if (m) candidates.push(m[1]); }
+  const text = dt.getData('text/plain');
+  if (text) candidates.push(text.trim());
+
+  for (const c of candidates) {
+    const u = unwrapImageUrl(c);
+    if (/^https?:\/\//i.test(u)) return u;
+  }
+  return null;
+}
+
+// Fetch a remote image through the backend proxy (sidesteps CORS), then reuse
+// the normal file-loading path.
+async function loadFromUrl(url) {
+  $('err').textContent = '';
+  $('dropEmpty').innerHTML = '<div class="hint">Loading image…</div>';
+  try {
+    const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || ('HTTP ' + res.status));
+    }
+    const blob = await res.blob();
+    const name = ((url.split('/').pop() || 'image').split('?')[0]) || 'image';
+    loadFile(new File([blob], name, { type: blob.type || 'image/png' }));
+  } catch (e) {
+    $('dropEmpty').innerHTML =
+      '<div style="font-size:30px">🖼️</div><div class="hint">Drag &amp; drop an image<br/>or click to browse</div>';
+    $('err').textContent = '⚠ Could not load image from URL: ' + e.message;
+  }
+}
+
+function loadFile(f) {
+  if (!f.type.startsWith('image/')) return;
+  FILE = f;
+  const url = URL.createObjectURL(f);
+  $('preview').src = url; $('preview').style.display = 'block';
+  $('dropEmpty').style.display = 'none';
+  $('inputSlot').innerHTML = `<img src="${url}" />`;
+  $('run').disabled = false;
+}
+
+// ---- generate ----
+async function generate() {
+  if (!FILE) return;
+  // In depth mode, refuse to run if the chosen model isn't downloaded yet —
+  // otherwise the request would silently trigger a slow blocking download.
+  if (MODE === 'depth') {
+    const m = currentDepthModel();
+    if (m && !m.cached) {
+      $('err').textContent = '⚠ "' + m.label + '" isn’t downloaded yet. ' +
+        'Click "Download model" below to fetch it first.';
+      $('depthDownloadWrap').style.display = 'block';
+      $('depthDownloadBtn').focus();
+      return;
+    }
+  }
+  const btn = $('run');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Generating…';
+  $('err').textContent = '';
+
+  const fd = new FormData();
+  fd.append('image', FILE);
+  fd.append('side_by_side_out', $('sbs').checked);
+  fd.append('max_side', $('maxSide').value);
+  let url = '/api/depth';
+  if (MODE === 'pca') {
+    url = '/api/pca';
+    fd.append('model', $('pcaModel').value);
+    fd.append('size', $('size').value);
+    fd.append('pct_low', $('pctLow').value);
+    fd.append('pct_high', $('pctHigh').value);
+    fd.append('remove_bg', $('removeBg').checked);
+    fd.append('bg_threshold', $('bgThreshold').value);
+  } else if ($('depthView').value === 'pca') {
+    url = '/api/depth_pca';
+    fd.append('model', $('depthModel').value);
+    fd.append('size', $('maxSide').value);
+  } else {
+    fd.append('model', $('depthModel').value);
+    fd.append('colormap', $('cmap').value);
+  }
+
+  try {
+    const res = await fetch(url, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    LAST_OUT = data.image;
+    $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+    $('outCap').textContent = MODE === 'pca' ? 'PCA feature map'
+      : ($('depthView').value === 'pca' ? 'Depth feature PCA' : 'Depth');
+    renderStats(data.info);
+    $('download').style.display = 'block';
+  } catch (e) {
+    $('err').textContent = '⚠ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+}
+
+function renderStats(info) {
+  $('stats').innerHTML = Object.entries(info)
+    .map(([k, v]) => `<span class="chip">${k}: <b>${v}</b></span>`).join('');
+}
+
+function downloadOut() {
+  if (!LAST_OUT) return;
+  const a = document.createElement('a');
+  a.href = LAST_OUT;
+  a.download = (MODE === 'pca' ? 'pca' : 'depth') + '.png';
+  a.click();
+}
+
+init();
+</script>
+</body>
+</html>

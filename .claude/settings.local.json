@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git clone *)",
-      "Bash(curl -s http://localhost:8000/api/health)"
-    ]
-  }
-}

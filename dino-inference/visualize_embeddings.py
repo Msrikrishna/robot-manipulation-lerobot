@@ -13,7 +13,7 @@ Flags:
     --out P    output PNG path (default outputs/vis.png)
 
 Env:
-    DINOV3_MODEL  override model id (default: ungated ViT-B/16 mirror)
+    DINOV3_MODEL  override model id (default: facebook/dinov3-vitb16-pretrain-lvd1689m)
 """
 import os
 import sys
@@ -23,7 +23,7 @@ import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 
-MODEL_ID = os.environ.get("DINOV3_MODEL", "rA9del/dinov3b16")
+MODEL_ID = os.environ.get("DINOV3_MODEL", "facebook/dinov3-vitb16-pretrain-lvd1689m")
 
 
 def main() -> None:
