@@ -1,9 +1,0 @@
-# Train (GPU box) + infer (Mac/MPS) share these. Install lerobot from your fork.
-torch>=2.3
-torchvision
-transformers>=4.45      # must include DINOv3 support
-diffusers>=0.27
-numpy
-opencv-python
-# lerobot: install your editable fork, e.g.
-#   pip install -e /path/to/lerobot-MakerMods
