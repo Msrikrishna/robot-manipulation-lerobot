@@ -5,3 +5,17 @@ torchvision
 transformers>=4.57
 pillow
 huggingface_hub
+
+# --- Depth Anything 3 (optional; for the da3-* models) ---------------------
+# DA3 is NOT transformers-compatible — it runs via the depth_anything_3 package
+# (webapp/app.py: get_da3_model). Its full dep set pulls xformers (no Apple
+# Silicon wheel) plus open3d/moviepy/pycolmap we don't need, so install it
+# WITHOUT deps and add only the runtime extras:
+#
+#   pip install depth-anything-3 --no-deps
+#   pip install omegaconf einops opencv-python-headless imageio scipy \
+#               addict trimesh plyfile typer e3nn evo pillow-heif
+#
+# The app stubs depth_anything_3.utils.export (the 3D/video export path) so the
+# skipped deps are never imported, and sets DA3_LOG_LEVEL=ERROR to quiet it.
+# Note: depth_anything_3 pins numpy<2 (downgrades numpy 2.x -> 1.26).

@@ -245,6 +245,11 @@
         <select id="liveCam"></select>
         <div class="desc">Pick a connected camera. Grant the browser camera permission when asked.</div>
       </div>
+      <div class="control">
+        <label>Model <span class="val" id="liveModelV"></span></label>
+        <select id="liveModel"></select>
+        <div class="desc" id="liveModelDesc"></div>
+      </div>
       <div class="control" id="liveModelWrap">
         <div class="desc" id="liveModelStatus" style="margin-bottom:8px"></div>
         <button class="btn secondary" id="liveDownloadBtn" style="display:none" onclick="downloadLiveModel()">⬇︎ Download model (99 MB)</button>
@@ -739,6 +744,7 @@ let liveFpsEMA = 0;
 bind('liveRes', 'liveResV');
 bind('liveGamma', 'liveGammaV', x => Number(x).toFixed(2));
 $('liveCmap').addEventListener('change', e => $('liveCmapV').textContent = e.target.value);
+$('liveModel').addEventListener('change', onLiveModelChange);
 const liveRangeLabel = () => {
   const n = $('liveNear').value, f = $('liveFar').value;
   $('liveRangeV').textContent = (n || f) ? `${n || 'min'} – ${f || 'max'}` : 'auto';
@@ -746,11 +752,16 @@ const liveRangeLabel = () => {
 $('liveNear').addEventListener('input', liveRangeLabel);
 $('liveFar').addEventListener('input', liveRangeLabel);
 
-function liveModelEntry() { return DEPTH_MODELS.find(m => m.key === LIVE_KEY); }
+function liveModelEntry() { return DEPTH_MODELS.find(m => m.key === $('liveModel').value); }
 
 async function initLive() {
   LIVE_KEY = CFG.live_depth_model;
-  // populate colormap dropdown once
+  // populate model dropdown (any depth model can stream; default = the small
+  // metric-indoor head). DA3 models work too but are slow per the warning.
+  if (!$('liveModel').options.length) {
+    DEPTH_MODELS.forEach(m => $('liveModel').appendChild(makeDepthOption(m)));
+    $('liveModel').value = LIVE_KEY;
+  }
   if (!$('liveCmap').options.length) {
     CFG.colormaps.forEach(c => {
       const o = document.createElement('option'); o.value = c; o.textContent = c;
@@ -758,9 +769,20 @@ async function initLive() {
     });
   }
   liveInited = true;
-  ensureLiveModel();                 // set status/button synchronously first
+  onLiveModelChange();               // set desc + status/button synchronously
   $('outCap').textContent = 'Live depth';
   await populateCameras();           // may await permission/enumeration
+}
+
+function onLiveModelChange() {
+  const m = liveModelEntry();
+  if (!m) return;
+  $('liveModelV').textContent = m.metric ? 'metric' : 'relative';
+  let desc = m.desc;
+  if (m.loader === 'da3') desc += ' ⚠ DA3 is ~3s/frame — not real-time.';
+  $('liveModelDesc').textContent = desc;
+  ensureLiveModel();
+  if (liveOn && !m.cached) stopLive();   // switched to an undownloaded model
 }
 
 // Enumerate connected cameras. Labels are only exposed after permission is
@@ -789,17 +811,21 @@ function ensureLiveModel() {
   const ready = m && m.cached;
   $('liveModelStatus').innerHTML = ready
     ? '✓ Model ready: <b style="color:var(--accent-2)">' + m.label + '</b>'
-    : '⚠ <b>' + (m ? m.label : 'live model') + '</b> (99 MB) must be downloaded before streaming.';
+    : '⚠ <b>' + (m ? m.label : 'live model') + '</b> (' + fmtSize(m && m.size_mb) + ') must be downloaded before streaming.';
   $('liveDownloadBtn').style.display = ready ? 'none' : 'block';
+  $('liveDownloadBtn').innerHTML = '⬇︎ Download model (' + fmtSize(m && m.size_mb) + ')';
+  $('liveDownloadBtn').disabled = false;
+  $('liveProgress').style.display = 'none';
   $('liveToggle').disabled = !ready;
   $('liveToggle').style.opacity = ready ? '1' : '.5';
 }
 
 function downloadLiveModel() {
+  const key = $('liveModel').value;
   const btn = $('liveDownloadBtn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Downloading…';
   $('liveProgress').style.display = 'block';
-  const es = new EventSource('/api/depth/download?model=' + encodeURIComponent(LIVE_KEY));
+  const es = new EventSource('/api/depth/download?model=' + encodeURIComponent(key));
   es.onmessage = ev => {
     const d = JSON.parse(ev.data);
     if (d.error) { es.close(); btn.disabled = false; btn.innerHTML = '⬇︎ Retry'; $('liveProgressText').textContent = '⚠ ' + d.error; return; }
@@ -807,9 +833,11 @@ function downloadLiveModel() {
     $('liveProgressText').textContent = d.total ? `${d.pct}% — ${fmtMB(d.downloaded)} / ${fmtMB(d.total)} MB` : `${d.pct}%`;
     if (d.done) {
       es.close();
-      const m = liveModelEntry(); if (m) m.cached = true;
+      const m = DEPTH_MODELS.find(x => x.key === key); if (m) m.cached = true;
+      const opt = [...$('liveModel').options].find(o => o.value === key);
+      if (opt && m) opt.textContent = '● ' + m.label + '  (' + fmtSize(m.size_mb) + ')';
       $('liveProgressText').textContent = 'done ✓';
-      ensureLiveModel();
+      if ($('liveModel').value === key) ensureLiveModel();
     }
   };
   es.onerror = () => { es.close(); btn.disabled = false; btn.innerHTML = '⬇︎ Retry'; $('liveProgressText').textContent = '⚠ interrupted'; };
@@ -872,6 +900,7 @@ async function liveLoop() {
     if (blob) {
       const fd = new FormData();
       fd.append('image', blob, 'frame.jpg');
+      fd.append('model', $('liveModel').value);
       fd.append('colormap', $('liveCmap').value);
       fd.append('gamma', $('liveGamma').value);
       fd.append('near', $('liveNear').value || 0);

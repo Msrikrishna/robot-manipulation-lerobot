@@ -37,6 +37,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+# Quiet the depth_anything_3 package's stdout logger (read at its import time).
+os.environ.setdefault("DA3_LOG_LEVEL", "ERROR")
+
 HERE = Path(__file__).parent
 
 # ---- model registry -------------------------------------------------------
@@ -146,6 +149,49 @@ DEPTH_MODELS = {
         "gated": False, "metric": True, "size_mb": 1341,
         "backbone": "DINOv2-L", "dataset": "Virtual KITTI (outdoor)",
     },
+    # Depth Anything 3 — NOT transformers-compatible; run via the
+    # depth_anything_3 package (loader="da3"). Relative depth. Heavy multi-view
+    # geometry transformer: ~3s/frame on MPS, so fine for single images but slow
+    # for the live tab.
+    "da3-small": {
+        "repo": "depth-anything/DA3-SMALL",
+        "label": "Depth Anything 3 · Small (relative)",
+        "desc": "DA3 via depth_anything_3 pkg. Relative depth + camera pose. "
+                "~3s/frame on MPS — slow for live.",
+        "gated": False, "metric": False, "size_mb": 137,
+        "backbone": "DINOv2-S (DA3)", "dataset": "DA3 academic mix", "loader": "da3",
+    },
+    "da3-base": {
+        "repo": "depth-anything/DA3-BASE",
+        "label": "Depth Anything 3 · Base (relative)",
+        "desc": "DA3 0.1B. Relative depth + pose. Slower than Small; single-image use.",
+        "gated": False, "metric": False, "size_mb": 542,
+        "backbone": "DINOv2-B (DA3)", "dataset": "DA3 academic mix", "loader": "da3",
+    },
+    "da3-large": {
+        "repo": "depth-anything/DA3-LARGE",
+        "label": "Depth Anything 3 · Large (relative)",
+        "desc": "DA3 0.4B. Sharpest DA3; relative depth + pose. Single-image use only.",
+        "gated": False, "metric": False, "size_mb": 1644,
+        "backbone": "DINOv2-L (DA3)", "dataset": "DA3 academic mix", "loader": "da3",
+    },
+    "da3-metric-large": {
+        "repo": "depth-anything/DA3METRIC-LARGE",
+        "label": "Depth Anything 3 · Metric Large",
+        "desc": "DA3 metric monocular (only metric size in V3 — no small/base). "
+                "Canonical metric; true metres need the camera focal length. "
+                "~3s/frame — single-image use.",
+        "gated": False, "metric": True, "size_mb": 1337,
+        "backbone": "DINOv2-L (DA3)", "dataset": "DA3 metric mix", "loader": "da3",
+    },
+    "da3-mono-large": {
+        "repo": "depth-anything/DA3MONO-LARGE",
+        "label": "Depth Anything 3 · Mono Large (relative)",
+        "desc": "DA3 monocular variant, tuned for single-image (vs the multi-view "
+                "default). Relative depth. ~3s/frame.",
+        "gated": False, "metric": False, "size_mb": 1337,
+        "backbone": "DINOv2-L (DA3)", "dataset": "DA3 academic mix", "loader": "da3",
+    },
 }
 
 # Default selection. Env override accepts either a registry key or a raw repo id.
@@ -216,6 +262,38 @@ def get_depth_pipe(model_id: str):
     from transformers import pipeline
 
     return pipeline("depth-estimation", model=model_id, device=device())
+
+
+@lru_cache(maxsize=1)
+def get_da3_model(repo: str):
+    """Lazy-load a Depth Anything 3 model via the depth_anything_3 package.
+
+    DA3 is not transformers-compatible, so it can't use the pipeline path. We
+    stub out the package's 3D/video export submodule (pulls moviepy/open3d we
+    don't ship) before importing, and silence its stdout logger. maxsize=1 —
+    these are large; keep only the most recent in memory.
+    """
+    import sys
+    import types
+
+    os.environ.setdefault("DA3_LOG_LEVEL", "ERROR")
+    if "depth_anything_3.utils.export" not in sys.modules:
+        stub = types.ModuleType("depth_anything_3.utils.export")
+        stub.export = lambda *a, **k: None
+        sys.modules["depth_anything_3.utils.export"] = stub
+    from depth_anything_3.api import DepthAnything3
+
+    return DepthAnything3.from_pretrained(repo).to(device()).eval()
+
+
+def _da3_depth(img: Image.Image, repo: str) -> np.ndarray:
+    """Run a DA3 model on one image -> (H, W) float32 depth array."""
+    model = get_da3_model(repo)
+    with torch.no_grad():
+        pred = model.inference([img], export_dir=None)
+    d = pred.depth
+    d = d.detach().cpu().numpy() if hasattr(d, "detach") else np.asarray(d)
+    return d[0] if d.ndim == 3 else d
 
 
 # ---- model download + cache tracking --------------------------------------
@@ -500,9 +578,11 @@ def run_depth(
     spec = DEPTH_MODELS.get(model_key, DEPTH_MODELS[DEFAULT_DEPTH_KEY])
     repo = spec["repo"]
     metric = spec.get("metric", False)
-    pipe = get_depth_pipe(repo)
-    result = pipe(img)
-    depth = result["predicted_depth"].squeeze().float().cpu().numpy()
+    if spec.get("loader") == "da3":
+        depth = _da3_depth(img, repo)
+    else:
+        pipe = get_depth_pipe(repo)
+        depth = pipe(img)["predicted_depth"].squeeze().float().cpu().numpy()
     depth_img, info = render_depth(
         depth, metric, repo, img.size, colormap, pct_low, pct_high, near, far, gamma
     )
@@ -750,6 +830,7 @@ def _depth_model_list():
             "size_mb": v.get("size_mb"),
             "backbone": v.get("backbone", "—"),
             "dataset": v.get("dataset", "—"),
+            "loader": v.get("loader", "pipeline"),
             "cached": _is_cached(v["repo"]),
         }
         for k, v in DEPTH_MODELS.items()
@@ -926,6 +1007,7 @@ async def api_depth_recolor(
 @app.post("/api/depth_frame")
 async def api_depth_frame(
     image: UploadFile = File(...),
+    model: str = Form(LIVE_DEPTH_KEY),
     colormap: str = Form("turbo"),
     gamma: float = Form(1.0),
     near: float = Form(0.0),
@@ -934,22 +1016,21 @@ async def api_depth_frame(
     pct_high: float = Form(98.0),
     max_side: int = Form(320),
 ):
-    """One frame of the live-camera depth stream: fixed to the small metric
-    indoor head, small max_side for speed, serialized through _INFER_LOCK so
-    overlapping frames don't fight over the device. No depth caching (frames are
-    transient)."""
-    repo = DEPTH_MODELS[LIVE_DEPTH_KEY]["repo"]
-    if not _is_cached(repo):
+    """One frame of the live-camera depth stream. Small max_side for speed,
+    serialized through _INFER_LOCK so overlapping frames don't fight over the
+    device. No depth caching (frames are transient)."""
+    spec = DEPTH_MODELS.get(model, DEPTH_MODELS[LIVE_DEPTH_KEY])
+    if not _is_cached(spec["repo"]):
         return JSONResponse(
             {"error": "live model not downloaded", "needs_download": True,
-             "model": LIVE_DEPTH_KEY}, status_code=409,
+             "model": model}, status_code=409,
         )
     img = read_image(await image.read(), max_side)
     t0 = time.time()
     try:
         async with _INFER_LOCK:
             depth_img, info, _, _ = await run_in_threadpool(
-                run_depth, img, colormap, LIVE_DEPTH_KEY, pct_low, pct_high, near, far, gamma
+                run_depth, img, colormap, model, pct_low, pct_high, near, far, gamma
             )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -968,6 +1049,13 @@ async def api_depth_pca(
     max_side: int = Form(1024),
 ):
     spec = DEPTH_MODELS.get(model, DEPTH_MODELS[DEFAULT_DEPTH_KEY])
+    if spec.get("loader") == "da3":
+        return JSONResponse(
+            {"error": "Feature PCA isn't available for Depth Anything 3 models "
+                      "(they don't expose a transformers backbone). Use the Depth "
+                      "map view, or pick a non-DA3 model."},
+            status_code=400,
+        )
     if not _is_cached(spec["repo"]):
         return JSONResponse(
             {"error": f"model '{spec['label']}' is not downloaded yet — "
