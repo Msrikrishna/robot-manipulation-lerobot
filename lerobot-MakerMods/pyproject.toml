@@ -61,6 +61,7 @@ dependencies = [
     # Hugging Face dependencies
     "datasets>=4.0.0",
     "diffusers>=0.27.2",
+    "transformers>=4.53.0",  # DINOv3 backbone (AutoModel) for the dino_dt policy
     "huggingface-hub[hf-transfer,cli]>=0.34.2",
 
     # Core dependencies
@@ -72,9 +73,14 @@ dependencies = [
     "packaging>=24.2",
     "pynput>=1.7.7",
     "pyserial>=3.5",
+    "feetech-servo-sdk>=1.0.0",  # SO101 Feetech servo bus: wiggle + auto-calibration (scservo_sdk)
     "wandb>=0.20.0",
 
     "torch>=2.2.1,<2.8.0", # TODO: Bumb dependency
+    # NOTE: torchcodec also needs the FFmpeg SHARED LIBS (libavutil.so.*) at runtime,
+    # which are NOT a pip package. Install FFmpeg v4-7 via conda-forge or apt
+    # (e.g. `conda install -c conda-forge "ffmpeg<8"`). FFmpeg 8 (libavutil.so.60) is
+    # NOT supported by this torchcodec range and causes "Could not load libtorchcodec".
     "torchcodec>=0.2.1,<0.6.0; sys_platform != 'win32' and (sys_platform != 'linux' or (platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'armv7l')) and (sys_platform != 'darwin' or platform_machine != 'x86_64')", # TODO: Bumb dependency
     "torchvision>=0.21.0,<0.23.0", # TODO: Bumb dependency
 
