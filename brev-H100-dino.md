@@ -133,7 +133,7 @@ python -c "import torch, transformers, torchcodec; print('CUDA:', torch.cuda.is_
 ## 5. Authenticate (on the H100)
 
 ```bash
-huggingface-cli login        # paste an HF token (read access to dataset + gated DINOv3)
+hf auth login                # paste an HF token (read access to dataset + gated DINOv3)
 wandb login                  # optional; or set --wandb.enable=false in the next step
 ```
 
@@ -147,7 +147,7 @@ Run inside `tmux` so it survives an SSH disconnect:
 tmux new -s train
 
 conda activate makermods     # re-activate inside the new tmux pane
-cd ~/lerobot-MakerMods
+cd ~/robot-manipulation-lerobot/lerobot-MakerMods
 
 lerobot-train \
   --dataset.repo_id=hdhruva/makermods_pick_book_place \
@@ -173,6 +173,69 @@ Notes:
   Resume with `--resume=true` and the same `--output_dir`.
 - The final policy is pushed to `srik410/dino_dt_pick_book_place` on the Hub
   (your account — the `hdhruva` namespace is the dataset owner's, you can't push there).
+
+---
+
+## 6b. Train `act_dino` (ACT + frozen DINOv3) — recommended
+
+This is the **ACT** policy (CVAE transformer, action chunking, `L1 + KL` loss — fast to
+train and infer) but with the ResNet vision backbone swapped for a **frozen DINOv3 ViT**.
+It's a custom policy added in this repo (`policies/act_dino/`), not stock lerobot.
+
+```bash
+tmux new -s train
+
+conda activate makermods
+cd ~/robot-manipulation-lerobot/lerobot-MakerMods
+
+lerobot-train \
+  --dataset.repo_id=hdhruva/makermods_pick_book_place \
+  --policy.type=act_dino \
+  --policy.device=cuda \
+  --policy.dino_image_size=224 \
+  --output_dir=outputs/train/act_dino_pick_book_place \
+  --job_name=act_dino_pick_book_place \
+  --batch_size=64 \
+  --steps=100000 \
+  --save_freq=10000 \
+  --num_workers=16 \
+  --wandb.enable=true \
+  --policy.push_to_hub=true \
+  --policy.repo_id=srik410/act_dino_pick_book_place
+```
+
+Notes:
+- **Backbone:** frozen `facebook/dinov3-vits16-pretrain-lvd1689m` (gated — needs `hf auth
+  login` + license accepted, same as `dino_dt`). Only the ACT transformer trains
+  (~40M params); DINOv3 (~22M) stays frozen.
+- **Faster than `dino_dt`:** single forward pass, no diffusion denoising — so `--batch_size=64`
+  is comfortable and it converges in fewer steps (ACT typically plateaus ~50–100K).
+- **Loss is `L1 + KL`** (not denoising MSE), so the numbers are NOT comparable to `dino_dt`.
+- `--policy.dino_image_size` must be a multiple of 16 (224 -> 14x14 patch tokens per camera).
+  Raise to 256/320 for more spatial detail at higher cost.
+- Checkpoints land in `outputs/train/act_dino_pick_book_place/checkpoints/`; resume with
+  `--resume=true` and the same `--output_dir`.
+- Plain ACT (ResNet, no DINOv3 / no gated weights) is just `--policy.type=act` if you want a
+  baseline to compare against.
+
+### Inference / eval (act_dino)
+Same as any lerobot policy — point `lerobot-record` (or `from_pretrained`) at the checkpoint
+or the Hub repo:
+
+```bash
+# quick load check
+python -c "from lerobot.policies.act_dino.modeling_act_dino import ACTDinoPolicy; \
+  ACTDinoPolicy.from_pretrained('srik410/act_dino_pick_book_place'); print('loads OK')"
+
+# run on the robot (on the machine wired to the SO101)
+lerobot-record \
+  --robot.type=so101_follower --robot.port=/dev/tty.usbmodemXXXX --robot.id=follower \
+  --robot.cameras='{front: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}' \
+  --display_data=false \
+  --dataset.repo_id=srik410/eval_act_dino_pick_book_place \
+  --dataset.single_task="place books" \
+  --policy.path=srik410/act_dino_pick_book_place
+```
 
 ---
 
@@ -208,7 +271,7 @@ brev ls                  # confirm it's stopped/gone
 | Login | laptop | `brev login` |
 | Connect | laptop | `brev shell dino-h100` |
 | Install | H100 | `pip install -e .` |
-| Auth | H100 | `huggingface-cli login` |
+| Auth | H100 | `hf auth login` |
 | Train | H100 | `lerobot-train --policy.type=dino_dt …` |
 | Teardown | laptop | `brev delete dino-h100` |
 
@@ -258,7 +321,7 @@ rm -rf outputs/train/<job_name>          # if it has no checkpoint worth keeping
 
 ### 5. 401 / gated weights on `facebook/dinov3-...`
 The DINOv3 backbone is gated. Accept the license at
-<https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m> and `huggingface-cli login`.
+<https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m> and `hf auth login`.
 
 ### 6. Stopping early + pushing the checkpoint yourself
 `Ctrl-C` stops training but **skips the auto-push** (that only runs at the very end).
