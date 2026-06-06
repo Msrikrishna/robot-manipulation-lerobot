@@ -248,15 +248,21 @@ class BooksSO101Env(BaseEnv):
             eye=[-0.18, 0.30, 0.46], target=[-0.44, 0.03, 0.0]
         )
         front = CameraConfig("render_camera", front_pose, 512, 512, 1, 0.01, 100)
-        # Straight top-down view (looking down -z). up=+x keeps the image stable
-        # since the default up (+z) would be parallel to the view direction.
-        top_pose = sapien_utils.look_at(
-            eye=[-0.46, 0.0, 0.6], target=[-0.46, 0.0, 0.0], up=[1, 0, 0]
+        # Top view: pose/fovy copied from the SAPIEN viewer ("Copy Camera
+        # Settings"). Resolution at half the copied 1512x856 to keep the aspect.
+        top_pose = sapien.Pose(
+            [-0.585834, -0.23721, 0.744007],
+            [0.735793, -0.248986, 0.52366, 0.349851],
         )
-        top = CameraConfig("top_camera", top_pose, 512, 512, 1, 0.01, 100)
+        top = CameraConfig("top_camera", top_pose, 756, 428, 1.05, 0.1, 1000)
         # High-res version of the wrist cam, for previewing what the arm sees.
         wrist = self._hand_camera_config("wrist_camera", 512, 512)
 
+        # In the interactive viewer, expose every camera so they all show up in
+        # the viewer's camera dropdown. For offscreen --save, return just the one
+        # picked by render_view (so --cam still selects a single image).
+        if self.render_mode == "human":
+            return [front, top, wrist]
         if self.render_view == "top":
             return top
         if self.render_view == "wrist":
