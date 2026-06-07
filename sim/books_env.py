@@ -49,7 +49,7 @@ COVER_T = 0.0018
 STAND_COLOR = [0.12, 0.12, 0.14, 1.0]
 STAND_BASE_HALF = [0.028, 0.072, 0.003]   # flat base on the desk
 STAND_WALL_HALF = [0.006, 0.066, 0.056]   # vertical back wall (thin in x)
-STAND_POS = [-0.535, -0.0875]             # (x, y) of the stand (absolute world)
+STAND_POS = [-0.53, -0.3875]             # (x, y) of the stand (absolute world)
 
 # Friction for the leaning books so they don't slide out from under each other.
 BOOK_FRICTION = 1.0
@@ -57,7 +57,7 @@ BOOK_FRICTION = 1.0
 # The stand + the two leaning books form one assembly. We rotate the whole
 # assembly CCW about z, around its centroid, so it can face a different way
 # without breaking the books-leaning-on-the-stand geometry.
-CLUSTER_CENTER = np.array([-0.4825, -0.0875])  # xy centroid (absolute world)
+CLUSTER_CENTER = np.array([-0.2325, -0.3875])  # xy centroid (absolute world)
 CLUSTER_YAW = np.pi / 2                    # 90 deg anticlockwise about z
 
 # Book layout, matching sample_book_stack_image.png:
@@ -79,7 +79,7 @@ BOOKS = [
         half_sizes=[0.062, 0.046, 0.012],
         cover_color=[0.16, 0.34, 0.46, 1.0],
         # rests on the desk: center = full half-height (hz + 2c)
-        pos=[-0.46, 0.26, 0.012 + 2 * COVER_T],
+        pos=[-0.46, -0.04, 0.012 + 2 * COVER_T],
         rpy=[0.0, 0.0, -np.pi/2],
     ),
     # --- LEFT stack: pink "HyperFocus" resting on top of the bottom book ---
@@ -88,7 +88,7 @@ BOOKS = [
         half_sizes=[0.057, 0.041, 0.009],
         cover_color=[0.86, 0.16, 0.42, 1.0],
         # rests on the bottom book: 2*(bottom full half) + this book's full half
-        pos=[-0.49, 0.25, 2 * (0.012 + 2 * COVER_T) + 0.009 + 2 * COVER_T],
+        pos=[-0.49, -0.05, 2 * (0.012 + 2 * COVER_T) + 0.009 + 2 * COVER_T],
         rpy=[0.0, 0.0, -np.pi/2],
     ),
     # --- RIGHT: big dark hardcover slanted back against the stand wall ---
@@ -98,7 +98,7 @@ BOOKS = [
         name="book_dark_upright",
         half_sizes=[0.072, 0.055, 0.014],
         cover_color=[0.06, 0.06, 0.07, 1.0],
-        pos=[-0.4625, -0.0875, 0.066],
+        pos=[-0.4625, -0.3875, 0.066],
         # pitch = vertical (-pi/2) leaned back by pi/8 (~22.5 deg)
         rpy=[0.0, -np.pi / 2 - np.pi / 8, 0.0],
         body_type="kinematic",
@@ -111,7 +111,7 @@ BOOKS = [
         name="book_red_upright",
         half_sizes=[0.062, 0.046, 0.011],
         cover_color=[0.52, 0.10, 0.10, 1.0],
-        pos=[-0.4255, -0.0875, 0.060],
+        pos=[-0.4255, -0.3875, 0.060],
         # pitch = vertical (-pi/2) leaned back by pi/8 (~22.5 deg), same as dark
         rpy=[0.0, -np.pi / 2 - np.pi / 8, 0.0],
         body_type="kinematic",
@@ -235,10 +235,18 @@ class BooksSO101Env(BaseEnv):
     @property
     def _default_sensor_configs(self):
         pose = sapien_utils.look_at(eye=[-0.27, 0, 0.4], target=[-0.56, 0, -0.25])
+        # `front_cam` (640x480) is what the ACT policy sees. Pose/fovy copied from
+        # the SAPIEN viewer (the camera previously labelled "top_camera").
+        front_cam_pose = sapien.Pose(
+            [-0.673923, -0.273742, 0.379082],
+            [0.907975, -0.0489157, 0.401161, 0.110714],
+        )
         return [
             CameraConfig("base_camera", pose, 128, 128, np.pi / 2, 0.01, 100),
             # ego / wrist camera the policy sees, mounted near the gripper
             self._hand_camera_config("hand_camera", 128, 128),
+            # front camera for policy inference (width=640, height=480, 90 deg vertical FOV)
+            CameraConfig("front_cam", front_cam_pose, 640, 480, np.pi / 3.5, 0.1, 1000),
         ]
 
     @property
@@ -248,27 +256,20 @@ class BooksSO101Env(BaseEnv):
             eye=[-0.18, 0.30, 0.46], target=[-0.44, 0.03, 0.0]
         )
         front = CameraConfig("render_camera", front_pose, 512, 512, 1, 0.01, 100)
-        # Top view: pose/fovy copied from the SAPIEN viewer ("Copy Camera
-        # Settings"). Resolution at half the copied 1512x856 to keep the aspect.
-        top_pose = sapien.Pose(
-            [-0.585834, -0.23721, 0.744007],
-            [0.735793, -0.248986, 0.52366, 0.349851],
-        )
-        top = CameraConfig("top_camera", top_pose, 756, 428, 1.05, 0.1, 1000)
         # High-res version of the wrist cam, for previewing what the arm sees.
         wrist = self._hand_camera_config("wrist_camera", 512, 512)
+        # NOTE: the policy's "front_cam" (the old top view) is a sensor camera, so
+        # it already shows up in the viewer's camera dropdown in human mode.
 
-        # In the interactive viewer, expose every camera so they all show up in
+        # In the interactive viewer, expose every render camera so they show up in
         # the viewer's camera dropdown. For offscreen --save, return just the one
         # picked by render_view (so --cam still selects a single image).
         if self.render_mode == "human":
-            return [front, top, wrist]
-        if self.render_view == "top":
-            return top
+            return [front, wrist]
         if self.render_view == "wrist":
             return wrist
         if self.render_view == "both":
-            return [front, top]
+            return [front, wrist]
         return front
 
     def _load_agent(self, options: dict):

@@ -31,9 +31,9 @@ def main():
     ap.add_argument("--save", default=None, help="save a rendered frame to this path")
     ap.add_argument(
         "--cam",
-        choices=["front", "top", "wrist", "both"],
+        choices=["front", "wrist", "both"],
         default="front",
-        help="which render camera for --save (front, top-down, wrist/ego, or both)",
+        help="which render camera for --save (front, wrist/ego, or both)",
     )
     args = ap.parse_args()
 
