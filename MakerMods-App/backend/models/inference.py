@@ -13,6 +13,9 @@ class InferenceRequest(BaseModel):
     single_task: str = Field(..., description="Task description (should match training task)")
     num_episodes: int = Field(10, description="Number of evaluation episodes")
     episode_time_s: int = Field(50, description="Episode duration in seconds")
+    reset_time_s: int = Field(
+        10, description="Idle seconds between episodes to reposition the scene (lerobot default is 60)"
+    )
     display_data: bool = Field(True, description="Whether to show visualization")
 
 

@@ -346,11 +346,14 @@ def record_loop(
             act = {**arm_action, **base_action} if len(base_action) > 0 else arm_action
             act_processed_teleop = teleop_action_processor((act, obs))
         else:
-            logging.info(
-                "No policy or teleoperator provided, skipping action generation."
-                "This is likely to happen when resetting the environment without a teleop device."
-                "The robot won't be at its rest position at the start of the next episode."
-            )
+            # No policy and no teleop: this is the reset phase during autonomous
+            # inference (no teleop device to reset the scene). We must still pace
+            # the loop AND advance `timestamp`, otherwise `timestamp` stays 0,
+            # `while timestamp < control_time_s` never ends, and the reset spins
+            # forever — never reaching the next episode.
+            dt_s = time.perf_counter() - start_loop_t
+            busy_wait(1 / fps - dt_s)
+            timestamp = time.perf_counter() - start_episode_t
             continue
 
         # Applies a pipeline to the action, default is IdentityProcessor

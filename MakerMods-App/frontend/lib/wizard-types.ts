@@ -92,6 +92,7 @@ export interface InferenceConfig {
   task: string;
   numEpisodes: number;
   episodeTimeS: number;
+  resetTimeS: number; // idle seconds between episodes (reposition the scene)
   displayData: boolean;
   modelType: string; // "act" | "smolvla" | "diffusion" etc.
 }
@@ -251,6 +252,7 @@ export const INITIAL_INFERENCE_CONFIG: InferenceConfig = {
   task: "",
   numEpisodes: 10,
   episodeTimeS: 50,
+  resetTimeS: 10,
   displayData: true,
   modelType: "act",
 };

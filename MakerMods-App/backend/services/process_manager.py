@@ -12,6 +12,14 @@ from typing import AsyncGenerator, Dict, Optional
 # Regex to strip ANSI escape sequences from subprocess output
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+# Noisy, purely-informational lerobot log lines emitted once PER FRAME (~30/s).
+# During inference the reset phase runs with no policy/teleop, so lerobot logs
+# "No policy or teleoperator provided..." every frame, flooding the log. These are
+# expected and benign, so we drop them from the collected output.
+_NOISE_SUBSTRINGS = (
+    "No policy or teleoperator provided, skipping action generation",
+)
+
 from backend.models.system import ProcessState, ProcessStatus
 
 
@@ -103,6 +111,14 @@ class ProcessManager:
             process_id: Process identifier.
             process_info: Process information object.
         """
+        # Persist full subprocess output to a findable file so crashes/hangs can be
+        # inspected after the fact (the in-memory deque is capped + lost on cleanup).
+        log_path = f"/tmp/makermods_{process_info.process_type}_{process_id}.log"
+        try:
+            log_file = open(log_path, "w", buffering=1)  # line-buffered
+        except Exception:
+            log_file = None
+
         try:
             while True:
                 line = await process_info.process.stdout.readline()
@@ -114,8 +130,16 @@ class ProcessManager:
                 log_line = _ANSI_ESCAPE_RE.sub("", log_line)
                 if not log_line:
                     continue
+                # Drop per-frame noise (e.g. the reset-phase "No policy..." flood)
+                if any(noise in log_line for noise in _NOISE_SUBSTRINGS):
+                    continue
                 process_info.logs.append(log_line)
                 process_info.log_seq += 1
+                if log_file is not None:
+                    try:
+                        log_file.write(log_line + "\n")
+                    except Exception:
+                        pass
                 # Wake up any WebSocket stream_logs waiters
                 process_info.log_event.set()
                 process_info.log_event.clear()
@@ -125,6 +149,11 @@ class ProcessManager:
         except Exception as e:
             process_info.error_message = f"Error collecting logs: {e}"
         finally:
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
             # Process has exited — release any port locks it held.
             # This handles the case where a subprocess finishes on its own
             # (e.g. calibration completes, recording finishes all episodes)

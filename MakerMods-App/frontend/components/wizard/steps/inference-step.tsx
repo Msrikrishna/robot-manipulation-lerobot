@@ -436,7 +436,7 @@ export function InferenceStep() {
           </div>
 
           {/* Episodes and timing */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="inf-episodes">Episodes</Label>
               <Input
@@ -475,6 +475,24 @@ export function InferenceStep() {
               {config.episodeTimeS < 1 && (
                 <p className="text-xs text-red-500">Must be at least 1</p>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="inf-reset-time">Reset Time (s)</Label>
+              <Input
+                id="inf-reset-time"
+                type="number"
+                min={0}
+                value={config.resetTimeS ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  updateConfig({ resetTimeS: val === "" ? 0 : parseInt(val) || 0 });
+                }}
+                disabled={isRunning}
+              />
+              <p className="text-xs text-muted-foreground">
+                Idle pause between episodes to reset the scene.
+              </p>
             </div>
           </div>
 

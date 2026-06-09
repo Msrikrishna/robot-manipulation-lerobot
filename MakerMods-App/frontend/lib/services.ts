@@ -279,6 +279,7 @@ export const services = {
         single_task: config.task,
         num_episodes: config.numEpisodes,
         episode_time_s: config.episodeTimeS,
+        reset_time_s: config.resetTimeS,
         display_data: config.displayData,
       }),
     });
