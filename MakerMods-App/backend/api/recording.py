@@ -51,6 +51,7 @@ def build_recording_command(config, request: RecordingRequest) -> list[str]:
             f"--dataset.episode_time_s={request.episode_time_s}",
             f"--dataset.reset_time_s={request.reset_time_s}",
             f"--display_data={str(request.display_data).lower()}",
+            *(["--resume=true"] if request.resume else []),
         ]
     else:
         for cam in config.single_arm.cameras:
@@ -78,6 +79,7 @@ def build_recording_command(config, request: RecordingRequest) -> list[str]:
             f"--dataset.episode_time_s={request.episode_time_s}",
             f"--dataset.reset_time_s={request.reset_time_s}",
             f"--display_data={str(request.display_data).lower()}",
+            *(["--resume=true"] if request.resume else []),
         ]
 
 

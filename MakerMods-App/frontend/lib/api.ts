@@ -94,6 +94,7 @@ interface RecordingRequest {
   num_episodes: number;
   episode_time_s: number;
   display_data: boolean;
+  resume?: boolean;
 }
 
 interface HFRepoInfo {

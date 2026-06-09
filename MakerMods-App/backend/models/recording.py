@@ -14,6 +14,10 @@ class RecordingRequest(BaseModel):
     episode_time_s: int = Field(100, description="Episode duration in seconds")
     reset_time_s: int = Field(10, description="Environment reset time between episodes in seconds")
     display_data: bool = Field(True, description="Whether to show Rerun visualization")
+    resume: bool = Field(
+        False,
+        description="Resume an existing dataset, appending new episodes after the last one",
+    )
 
 
 class RecordingResponse(BaseModel):

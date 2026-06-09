@@ -127,7 +127,10 @@ export const services = {
     return fetchAPI(`/api/teleoperation/status/${processId}`);
   },
 
-  startRecording: async (config: RecordingConfig): Promise<StartResponse> => {
+  startRecording: async (
+    config: RecordingConfig,
+    resume = false,
+  ): Promise<StartResponse> => {
     if (USE_MOCK) {
       const mock = await import("./mock-data");
       return mock.startResponse("recording");
@@ -142,6 +145,7 @@ export const services = {
         episode_time_s: config.episodeTimeS,
         reset_time_s: config.resetTimeS,
         display_data: config.displayData,
+        resume,
       }),
     });
   },

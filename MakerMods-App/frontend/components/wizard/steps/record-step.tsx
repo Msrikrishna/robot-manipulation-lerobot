@@ -14,6 +14,7 @@ import {
   Play,
   RefreshCw,
   Square,
+  StepForward,
   XCircle,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -463,6 +464,7 @@ function EpisodeStatusList({
 export function RecordStep() {
   const { state, dispatch, allPriorStepsComplete } = useWizard();
   const [starting, setStarting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -586,8 +588,12 @@ export function RecordStep() {
     config.numEpisodes > 0 &&
     config.episodeTimeS > 0;
 
-  async function handleStart() {
-    setStarting(true);
+  // `resume=false` starts a fresh recording (overwriting any existing dataset).
+  // `resume=true` continues an existing dataset, appending new episodes after
+  // the last recorded one — so it must NOT clear the cached dataset.
+  async function handleStart(resume = false) {
+    if (resume) setResuming(true);
+    else setStarting(true);
     setErrorMsg(null);
     setShowLogs(false);
     setRecordingSuccess(false);
@@ -603,9 +609,15 @@ export function RecordStep() {
       await services.saveConfig(state);
       // Release any MJPEG camera streams so the recording subprocess can access them
       await services.stopCameraStreams().catch(() => {});
-      // Clear cached data so the new recording replaces any previous dataset
-      await services.clearCache(fullRepoId).catch(() => {});
-      const res = await services.startRecording({ ...config, repoId: fullRepoId });
+      if (!resume) {
+        // Clear cached data so the new recording replaces any previous dataset.
+        // Skipped when resuming so the existing episodes are kept and appended to.
+        await services.clearCache(fullRepoId).catch(() => {});
+      }
+      const res = await services.startRecording(
+        { ...config, repoId: fullRepoId },
+        resume,
+      );
       dispatch({ type: "SET_RECORD_PROCESS_ID", id: res.process_id });
       saveRepoId(suffix);
       setRepoIdWarning(false);
@@ -615,6 +627,7 @@ export function RecordStep() {
       setShowLogs(true);
     } finally {
       setStarting(false);
+      setResuming(false);
     }
   }
 
@@ -697,8 +710,10 @@ export function RecordStep() {
             {repoIdWarning && (
               <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                A dataset with this repo ID was recorded before. Starting will
-                overwrite the existing dataset.
+                A dataset with this repo ID was recorded before.{" "}
+                <span className="font-medium">Start Recording</span> overwrites it;
+                use <span className="font-medium">Continue from last episode</span>{" "}
+                to append new episodes instead.
               </p>
             )}
           </div>
@@ -854,14 +869,35 @@ export function RecordStep() {
         {/* Start button + folder button */}
         <div className="flex items-center gap-2">
           {!isRunning && !errorMsg && (
-            <Button onClick={handleStart} disabled={starting || !canStart}>
-              {starting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="mr-2 h-4 w-4" />
+            <>
+              <Button
+                onClick={() => handleStart(false)}
+                disabled={starting || resuming || !canStart}
+              >
+                {starting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="mr-2 h-4 w-4" />
+                )}
+                {starting ? "Starting…" : "Start Recording"}
+              </Button>
+              {/* Resume only makes sense for a dataset that already exists. */}
+              {repoIdWarning && (
+                <Button
+                  variant="outline"
+                  onClick={() => handleStart(true)}
+                  disabled={starting || resuming || !canStart}
+                  title="Append new episodes to the existing dataset, continuing after the last recorded episode"
+                >
+                  {resuming ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <StepForward className="mr-2 h-4 w-4" />
+                  )}
+                  {resuming ? "Resuming…" : "Continue from last episode"}
+                </Button>
               )}
-              {starting ? "Starting…" : "Start Recording"}
-            </Button>
+            </>
           )}
           <Button
             variant="outline"

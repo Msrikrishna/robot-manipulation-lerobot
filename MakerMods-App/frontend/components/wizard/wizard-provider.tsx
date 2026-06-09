@@ -6,6 +6,7 @@ import {
   useReducer,
   useCallback,
   useEffect,
+  useRef,
   type ReactNode,
 } from "react";
 import type {
@@ -57,6 +58,7 @@ type Action =
   | { type: "UPDATE_PHASE_CONFIG"; id: string; config: Partial<InferenceConfig> }
   | { type: "SET_ACTIVE_PHASE"; id: string | null }
   | { type: "TOGGLE_DEBUG_MODE" }
+  | { type: "HYDRATE"; payload: PersistedWizardSettings }
   | { type: "CLEAR_ALL_VALUES" }
   | { type: "RESTART" };
 
@@ -386,6 +388,37 @@ function reducer(state: WizardState, action: Action): WizardState {
       next = { ...state, debugMode: !state.debugMode };
       break;
 
+    case "HYDRATE": {
+      // Apply persisted settings after mount. Kept out of the initial render
+      // so the first client paint matches the server (avoids hydration errors).
+      const saved = action.payload;
+      next = {
+        ...state,
+        robotMode: saved.robotMode ?? state.robotMode,
+        portAssignments: saved.portAssignments ?? state.portAssignments,
+        cameraSelections: saved.cameraSelections ?? state.cameraSelections,
+        calibrationSelections:
+          saved.calibrationSelections ?? state.calibrationSelections,
+        newCalibrationNames:
+          saved.newCalibrationNames ?? state.newCalibrationNames,
+        recordingConfig: {
+          ...state.recordingConfig,
+          ...(saved.recordingConfig ?? {}),
+        },
+        trainingConfig: {
+          ...state.trainingConfig,
+          ...(saved.trainingConfig ?? {}),
+        },
+        inferenceConfig: {
+          ...INITIAL_INFERENCE_CONFIG,
+          ...(saved.inferenceConfig ?? {}),
+        },
+        phases: saved.phases ?? state.phases,
+        activePhaseId: saved.activePhaseId ?? state.activePhaseId,
+      };
+      break;
+    }
+
     case "CLEAR_ALL_VALUES":
       next = { ...INITIAL_STATE, currentStep: state.currentStep };
       break;
@@ -463,40 +496,24 @@ function extractPersisted(state: WizardState): PersistedWizardSettings {
   };
 }
 
-function getInitialState(): WizardState {
-  if (typeof window === "undefined") return INITIAL_STATE;
-  const saved = readPersisted();
-  if (!saved) return INITIAL_STATE;
-  return {
-    ...INITIAL_STATE,
-    robotMode: saved.robotMode ?? INITIAL_STATE.robotMode,
-    portAssignments: saved.portAssignments ?? INITIAL_STATE.portAssignments,
-    cameraSelections: saved.cameraSelections ?? INITIAL_STATE.cameraSelections,
-    calibrationSelections:
-      saved.calibrationSelections ?? INITIAL_STATE.calibrationSelections,
-    newCalibrationNames:
-      saved.newCalibrationNames ?? INITIAL_STATE.newCalibrationNames,
-    recordingConfig: {
-      ...INITIAL_STATE.recordingConfig,
-      ...(saved.recordingConfig ?? {}),
-    },
-    trainingConfig: {
-      ...INITIAL_STATE.trainingConfig,
-      ...(saved.trainingConfig ?? {}),
-    },
-    inferenceConfig: {
-      ...INITIAL_INFERENCE_CONFIG,
-      ...(saved.inferenceConfig ?? {}),
-    },
-    phases: saved.phases ?? INITIAL_STATE.phases,
-    activePhaseId: saved.activePhaseId ?? INITIAL_STATE.activePhaseId,
-  };
-}
-
 export function WizardProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, INITIAL_STATE, getInitialState);
+  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+  const hydratedRef = useRef(false);
+
+  // Load persisted settings on the client after the first render. This keeps
+  // the initial client render identical to the server's (both use
+  // INITIAL_STATE), so reading from localStorage can't cause a hydration
+  // mismatch.
+  useEffect(() => {
+    const saved = readPersisted();
+    if (saved) dispatch({ type: "HYDRATE", payload: saved });
+    hydratedRef.current = true;
+  }, []);
 
   useEffect(() => {
+    // Don't persist until after we've hydrated, otherwise the first run would
+    // overwrite saved settings with INITIAL_STATE before HYDRATE applies them.
+    if (!hydratedRef.current) return;
     try {
       localStorage.setItem(
         PERSIST_KEY,
