@@ -638,6 +638,21 @@ _DEPTH_CACHE: "OrderedDict[str, dict]" = OrderedDict()
 _DEPTH_CACHE_MAX = 8
 _DEPTH_CACHE_LOCK = threading.Lock()
 
+# Similarity cache: token -> {sim_map (gh x gw float32), clicked (ci, cj), grid, orig}
+_SIM_CACHE: "OrderedDict[str, dict]" = OrderedDict()
+_SIM_CACHE_MAX = 8
+_SIM_CACHE_LOCK = threading.Lock()
+
+
+def _cache_sim(sim_map: np.ndarray, clicked: tuple, grid: tuple, orig: Image.Image) -> str:
+    import uuid
+    token = uuid.uuid4().hex
+    with _SIM_CACHE_LOCK:
+        _SIM_CACHE[token] = {"sim_map": sim_map, "clicked": clicked, "grid": grid, "orig": orig}
+        while len(_SIM_CACHE) > _SIM_CACHE_MAX:
+            _SIM_CACHE.popitem(last=False)
+    return token
+
 
 def _cache_depth(depth, metric: bool, repo: str, orig: Image.Image) -> str:
     import uuid
@@ -726,6 +741,349 @@ def run_depth_pca(img: Image.Image, model_key: str, size: int, pct_low: float, p
     pca_img = Image.fromarray((rgb * 255).astype("uint8")).resize(img.size, Image.NEAREST)
     info = {"source": source, "grid": f"{gh}x{gw}", "dim": int(dim), "model": repo}
     return pca_img, info
+
+
+# ---- similarity (click-a-patch) -------------------------------------------
+
+def run_similarity_multi(
+    img: Image.Image,
+    model_id: str,
+    size: int,
+    points: list,      # list of (cx, cy) fractional coords
+    threshold: float,
+    colormap: str,
+    overlay_alpha: float,
+):
+    proc, model = get_backbone(model_id)
+    patch = model.config.patch_size
+    w, h = img.size
+    scale = size / max(w, h)
+    nw = max(patch, round(w * scale / patch) * patch)
+    nh = max(patch, round(h * scale / patch) * patch)
+    img_in = img.resize((nw, nh), Image.BICUBIC)
+    inputs = proc(
+        images=img_in, do_resize=False, do_center_crop=False, return_tensors="pt"
+    ).to(device())
+
+    with torch.no_grad():
+        out = model(**inputs)
+    tokens = out.last_hidden_state[0]
+
+    _, _, H, W = inputs["pixel_values"].shape
+    gh, gw = H // patch, W // patch
+    n_patches = gh * gw
+    patch_tokens = tokens[-n_patches:].float().cpu()  # (n_patches, D)
+
+    # Collect query tokens for all clicked points and average them
+    query_tokens = []
+    clicked_list = []
+    for cx, cy in points:
+        ci = int(np.clip(cy * gh, 0, gh - 1))
+        cj = int(np.clip(cx * gw, 0, gw - 1))
+        query_tokens.append(patch_tokens[ci * gw + cj])
+        clicked_list.append((ci, cj))
+
+    query = torch.stack(query_tokens).mean(0)  # averaged embedding (D,)
+
+    q_norm = query / (query.norm() + 1e-8)
+    t_norm = patch_tokens / (patch_tokens.norm(dim=1, keepdim=True) + 1e-8)
+    sim = (t_norm @ q_norm).numpy()
+    sim_grid = sim.reshape(gh, gw).astype(np.float32)
+
+    # Use first clicked point as the representative marker
+    token = _cache_sim(sim_grid, clicked_list[0], (gh, gw), img)
+    # Store all clicked points in the cache entry for multi-dot rendering
+    with _SIM_CACHE_LOCK:
+        if token in _SIM_CACHE:
+            _SIM_CACHE[token]["clicked_all"] = clicked_list
+
+    result_img, info = render_similarity_multi(
+        sim_grid, clicked_list, img, threshold, colormap, overlay_alpha
+    )
+    info["n_points"] = len(clicked_list)
+    return result_img, info, token
+
+
+def render_similarity_multi(
+    sim_grid: np.ndarray,
+    clicked_list: list,
+    orig: Image.Image,
+    threshold: float,
+    colormap: str,
+    overlay_alpha: float,
+) -> tuple[Image.Image, dict]:
+    gh, gw = sim_grid.shape
+
+    lo, hi = sim_grid.min(), sim_grid.max()
+    sim_01 = (sim_grid - lo) / (hi - lo + 1e-8)
+    colored = np.array(apply_colormap(sim_01, colormap).resize(orig.size, Image.BILINEAR), dtype=np.float32)
+
+    mask_patch = (sim_grid >= threshold).astype(np.uint8)
+    mask_px = np.array(
+        Image.fromarray(mask_patch * 255).resize(orig.size, Image.NEAREST)
+    ) > 0
+
+    orig_arr = np.array(orig.convert("RGB"), dtype=np.float32)
+    result = np.where(
+        mask_px[..., None],
+        colored * overlay_alpha + orig_arr * (1.0 - overlay_alpha),
+        orig_arr * 0.25,
+    ).clip(0, 255).astype(np.uint8)
+    result_img = Image.fromarray(result)
+
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(result_img)
+    pw, ph = orig.width / gw, orig.height / gh
+    r = max(5, int(min(pw, ph) * 0.35))
+    for ci, cj in clicked_list:
+        cx = int((cj + 0.5) * pw)
+        cy = int((ci + 0.5) * ph)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255), width=2)
+        draw.ellipse([cx - r + 2, cy - r + 2, cx + r - 2, cy + r - 2], outline=(0, 0, 0), width=1)
+
+    n_above = int(mask_patch.sum())
+    info = {
+        "n_points": len(clicked_list),
+        "threshold": round(float(threshold), 2),
+        "above_threshold": n_above,
+        "coverage": f"{100 * n_above / (gh * gw):.1f}%",
+        "grid": f"{gh}x{gw}",
+    }
+    return result_img, info
+
+
+def run_similarity(
+    img: Image.Image,
+    model_id: str,
+    size: int,
+    click_x: float,  # fraction of image width  [0, 1]
+    click_y: float,  # fraction of image height [0, 1]
+    threshold: float,
+    colormap: str,
+    overlay_alpha: float,
+):
+    proc, model = get_backbone(model_id)
+    patch = model.config.patch_size
+    w, h = img.size
+    scale = size / max(w, h)
+    nw = max(patch, round(w * scale / patch) * patch)
+    nh = max(patch, round(h * scale / patch) * patch)
+    img_in = img.resize((nw, nh), Image.BICUBIC)
+    inputs = proc(
+        images=img_in, do_resize=False, do_center_crop=False, return_tensors="pt"
+    ).to(device())
+
+    with torch.no_grad():
+        out = model(**inputs)
+    tokens = out.last_hidden_state[0]
+
+    _, _, H, W = inputs["pixel_values"].shape
+    gh, gw = H // patch, W // patch
+    n_patches = gh * gw
+    patch_tokens = tokens[-n_patches:].float().cpu()  # (n_patches, D)
+
+    # Map fractional click to patch grid cell
+    ci = int(np.clip(click_y * gh, 0, gh - 1))
+    cj = int(np.clip(click_x * gw, 0, gw - 1))
+    query = patch_tokens[ci * gw + cj]  # (D,)
+
+    # Cosine similarity: normalise then dot product
+    q_norm = query / (query.norm() + 1e-8)
+    t_norm = patch_tokens / (patch_tokens.norm(dim=1, keepdim=True) + 1e-8)
+    sim = (t_norm @ q_norm).numpy()  # (n_patches,) in [-1, 1]
+    sim_grid = sim.reshape(gh, gw).astype(np.float32)
+
+    token = _cache_sim(sim_grid, (ci, cj), (gh, gw), img)
+    result_img, info = render_similarity(sim_grid, (ci, cj), img, threshold, colormap, overlay_alpha)
+    return result_img, info, token
+
+
+def render_similarity(
+    sim_grid: np.ndarray,  # (gh, gw) cosine sim in [-1, 1]
+    clicked: tuple,        # (ci, cj) patch grid coords
+    orig: Image.Image,
+    threshold: float,      # cosine sim threshold in [-1, 1]
+    colormap: str,
+    overlay_alpha: float,
+) -> tuple[Image.Image, dict]:
+    gh, gw = sim_grid.shape
+    ci, cj = clicked
+
+    # Normalise full range to [0, 1] for colormap (preserves relative contrast)
+    lo, hi = sim_grid.min(), sim_grid.max()
+    sim_01 = (sim_grid - lo) / (hi - lo + 1e-8)
+    colored = np.array(apply_colormap(sim_01, colormap).resize(orig.size, Image.BILINEAR), dtype=np.float32)
+
+    # Build threshold mask at patch resolution, resize to pixel space
+    mask_patch = (sim_grid >= threshold).astype(np.uint8)
+    mask_px = np.array(
+        Image.fromarray(mask_patch * 255).resize(orig.size, Image.NEAREST)
+    ) > 0  # (H, W) bool
+
+    orig_arr = np.array(orig.convert("RGB"), dtype=np.float32)
+    # Above threshold: blend colormap + original. Below: dim original to 30%.
+    result = np.where(
+        mask_px[..., None],
+        colored * overlay_alpha + orig_arr * (1.0 - overlay_alpha),
+        orig_arr * 0.25,
+    ).clip(0, 255).astype(np.uint8)
+    result_img = Image.fromarray(result)
+
+    # Draw a small white + black dot at the clicked patch
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(result_img)
+    pw, ph = orig.width / gw, orig.height / gh
+    cx = int((cj + 0.5) * pw)
+    cy = int((ci + 0.5) * ph)
+    r = max(5, int(min(pw, ph) * 0.35))
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255), width=2)
+    draw.ellipse([cx - r + 2, cy - r + 2, cx + r - 2, cy + r - 2], outline=(0, 0, 0), width=1)
+
+    n_above = int(mask_patch.sum())
+    info = {
+        "clicked_patch": f"({ci},{cj})",
+        "threshold": round(float(threshold), 2),
+        "above_threshold": n_above,
+        "coverage": f"{100 * n_above / (gh * gw):.1f}%",
+        "grid": f"{gh}x{gw}",
+    }
+    return result_img, info
+
+
+# ---- segmentation palettes ------------------------------------------------
+# Each palette is a list of (R, G, B) colours. We cycle through them when
+# there are more clusters than colours.
+_PALETTES: dict[str, list[tuple[int, int, int]]] = {
+    "colorful": [
+        (99, 179, 237), (252, 129, 74), (104, 211, 145), (246, 224, 94),
+        (183, 148, 246), (247, 104, 161), (79, 209, 197), (237, 137, 54),
+        (66, 153, 225), (72, 187, 120), (237, 100, 166), (160, 174, 192),
+        (246, 173, 85), (129, 230, 217), (154, 230, 180), (250, 240, 137),
+        (213, 63, 140), (49, 151, 149), (214, 158, 46), (90, 103, 216),
+    ],
+    "pastel": [
+        (190, 227, 248), (254, 200, 154), (154, 230, 180), (250, 240, 137),
+        (214, 188, 250), (251, 182, 206), (129, 230, 217), (246, 211, 101),
+        (190, 212, 252), (154, 230, 180), (246, 173, 85), (203, 213, 224),
+        (254, 215, 215), (198, 246, 213), (255, 245, 157), (179, 229, 252),
+        (225, 190, 231), (178, 235, 242), (255, 224, 178), (200, 230, 201),
+    ],
+    "vivid": [
+        (229, 62, 62), (49, 151, 149), (66, 153, 225), (214, 158, 46),
+        (159, 122, 234), (246, 135, 179), (56, 178, 172), (237, 137, 54),
+        (72, 187, 120), (99, 179, 237), (246, 224, 94), (160, 174, 192),
+        (183, 148, 246), (104, 211, 145), (247, 104, 161), (79, 209, 197),
+        (237, 100, 166), (129, 230, 217), (252, 129, 74), (213, 63, 140),
+    ],
+}
+
+
+def _kmeans_numpy(X: np.ndarray, k: int, n_iter: int = 30) -> np.ndarray:
+    """Pure-numpy k-means. Fast enough for patch grids (N~200-2000, D~384)."""
+    rng = np.random.default_rng(42)
+    centers = X[rng.choice(len(X), k, replace=False)]
+    labels = np.zeros(len(X), dtype=np.int32)
+    for _ in range(n_iter):
+        # (N, k) squared distances
+        diff = X[:, None, :] - centers[None, :, :]  # (N, k, D)
+        dists = (diff * diff).sum(-1)
+        new_labels = dists.argmin(axis=1).astype(np.int32)
+        new_centers = np.array(
+            [X[new_labels == i].mean(0) if (new_labels == i).any() else centers[i]
+             for i in range(k)],
+            dtype=np.float32,
+        )
+        if np.array_equal(new_labels, labels) and np.allclose(centers, new_centers):
+            break
+        labels, centers = new_labels, new_centers
+    return labels
+
+
+def run_segmentation(
+    img: Image.Image,
+    model_id: str,
+    size: int,
+    n_clusters: int,
+    pct_low: float,
+    pct_high: float,
+    overlay_alpha: float,
+    palette: str,
+    show_boundaries: bool,
+):
+    proc, model = get_backbone(model_id)
+    patch = model.config.patch_size
+    w, h = img.size
+    scale = size / max(w, h)
+    nw = max(patch, round(w * scale / patch) * patch)
+    nh = max(patch, round(h * scale / patch) * patch)
+    img_in = img.resize((nw, nh), Image.BICUBIC)
+    inputs = proc(
+        images=img_in, do_resize=False, do_center_crop=False, return_tensors="pt"
+    ).to(device())
+
+    with torch.no_grad():
+        out = model(**inputs)
+    tokens = out.last_hidden_state[0]
+
+    _, _, H, W = inputs["pixel_values"].shape
+    gh, gw = H // patch, W // patch
+    n_patches = gh * gw
+    feats = tokens[-n_patches:].float().cpu().numpy()  # (n_patches, D)
+
+    # Optionally whiten features (PCA-based) for better cluster separation.
+    feats = feats - feats.mean(0, keepdims=True)
+    std = feats.std(0, keepdims=True) + 1e-8
+    feats = feats / std
+
+    k = max(2, min(int(n_clusters), n_patches))
+    labels = _kmeans_numpy(feats, k)  # (n_patches,)
+
+    colors = _PALETTES.get(palette, _PALETTES["colorful"])
+    seg_rgb = np.zeros((gh * gw, 3), dtype=np.uint8)
+    for i in range(k):
+        seg_rgb[labels == i] = colors[i % len(colors)]
+    seg_img = Image.fromarray(seg_rgb.reshape(gh, gw, 3)).resize(img.size, Image.NEAREST)
+
+    if show_boundaries:
+        seg_arr = np.array(seg_img)
+        lbl_grid = labels.reshape(gh, gw)
+        # Mark pixels where adjacent patches differ
+        bound_h = np.repeat(
+            np.repeat((lbl_grid[:-1] != lbl_grid[1:]).astype(np.uint8), patch, axis=0),
+            patch, axis=1,
+        )
+        bound_v = np.repeat(
+            np.repeat((lbl_grid[:, :-1] != lbl_grid[:, 1:]).astype(np.uint8), patch, axis=0),
+            patch, axis=1,
+        )
+        bh = np.array(Image.fromarray(bound_h * 255).resize(img.size, Image.NEAREST)) > 0
+        bv = np.array(Image.fromarray(bound_v * 255).resize(img.size, Image.NEAREST)) > 0
+        boundary = bh | bv
+        seg_arr[boundary] = [255, 255, 255]
+        seg_img = Image.fromarray(seg_arr)
+
+    # Blend with original
+    alpha = float(np.clip(overlay_alpha, 0.0, 1.0))
+    if alpha < 1.0:
+        orig_arr = np.array(img.convert("RGB"), dtype=np.float32)
+        seg_arr = np.array(seg_img, dtype=np.float32)
+        blended = (seg_arr * alpha + orig_arr * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+        seg_img = Image.fromarray(blended)
+
+    # Compute per-cluster area fractions
+    total = gh * gw
+    area_chips = {f"seg_{i}": f"{100 * (labels == i).sum() / total:.1f}%" for i in range(k)}
+
+    info = {
+        "grid": f"{gh}x{gw}",
+        "patches": int(n_patches),
+        "clusters": k,
+        "dim": int(tokens.shape[-1]),
+        "input_size": f"{nw}x{nh}",
+        "patch_size": int(patch),
+        **area_chips,
+    }
+    return seg_img, info
 
 
 # ---- app ------------------------------------------------------------------
@@ -847,6 +1205,7 @@ def config():
         "live_depth_model": LIVE_DEPTH_KEY,
         "device": device(),
         "colormaps": ["turbo", "magma", "gray"],
+        "seg_palettes": list(_PALETTES.keys()),
     }
 
 
@@ -1075,3 +1434,124 @@ async def api_depth_pca(
     info["working_res"] = f"{img.width}x{img.height}"
     info["seconds"] = round(time.time() - t0, 2)
     return {"image": to_b64_png(out), "info": info}
+
+
+@app.post("/api/segment")
+async def api_segment(
+    image: UploadFile = File(...),
+    model: str = Form("vits16"),
+    size: int = Form(448),
+    n_clusters: int = Form(8),
+    pct_low: float = Form(2.0),
+    pct_high: float = Form(98.0),
+    overlay_alpha: float = Form(0.7),
+    palette: str = Form("colorful"),
+    show_boundaries: bool = Form(True),
+    side_by_side_out: bool = Form(False),
+    max_side: int = Form(1024),
+):
+    model_id = PCA_MODELS.get(model, PCA_MODELS["vits16"])
+    img = read_image(await image.read(), max_side)
+    t0 = time.time()
+    try:
+        async with _INFER_LOCK:
+            result, info = await run_in_threadpool(
+                run_segmentation, img, model_id, size, n_clusters,
+                pct_low, pct_high, overlay_alpha, palette, show_boundaries,
+            )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    out = side_by_side(img, result) if side_by_side_out else result
+    info["model"] = model_id
+    info["working_res"] = f"{img.width}x{img.height}"
+    info["seconds"] = round(time.time() - t0, 2)
+    return {"image": to_b64_png(out), "info": info}
+
+
+@app.post("/api/similarity")
+async def api_similarity(
+    image: UploadFile = File(...),
+    model: str = Form("vits16"),
+    size: int = Form(448),
+    click_x: float = Form(0.5),
+    click_y: float = Form(0.5),
+    threshold: float = Form(0.5),
+    colormap: str = Form("turbo"),
+    overlay_alpha: float = Form(0.75),
+    max_side: int = Form(1024),
+):
+    model_id = PCA_MODELS.get(model, PCA_MODELS["vits16"])
+    img = read_image(await image.read(), max_side)
+    t0 = time.time()
+    try:
+        async with _INFER_LOCK:
+            result, info, token = await run_in_threadpool(
+                run_similarity, img, model_id, size, click_x, click_y,
+                threshold, colormap, overlay_alpha,
+            )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    info["model"] = model_id
+    info["working_res"] = f"{img.width}x{img.height}"
+    info["seconds"] = round(time.time() - t0, 2)
+    return {"image": to_b64_png(result), "info": info, "token": token}
+
+
+@app.post("/api/similarity/rerender")
+async def api_similarity_rerender(
+    token: str = Form(...),
+    threshold: float = Form(0.5),
+    colormap: str = Form("turbo"),
+    overlay_alpha: float = Form(0.75),
+):
+    """Re-render cached similarity map with new threshold/colormap — no model re-run."""
+    with _SIM_CACHE_LOCK:
+        entry = _SIM_CACHE.get(token)
+        if entry is not None:
+            _SIM_CACHE.move_to_end(token)
+    if entry is None:
+        return JSONResponse({"error": "similarity expired — click again", "stale": True}, status_code=410)
+    # Multi-point entries store all clicked points; single entries use one.
+    clicked_all = entry.get("clicked_all")
+    if clicked_all:
+        result_img, info = await run_in_threadpool(
+            render_similarity_multi, entry["sim_map"], clicked_all, entry["orig"],
+            threshold, colormap, overlay_alpha,
+        )
+    else:
+        result_img, info = await run_in_threadpool(
+            render_similarity, entry["sim_map"], entry["clicked"], entry["orig"],
+            threshold, colormap, overlay_alpha,
+        )
+    return {"image": to_b64_png(result_img), "info": info}
+
+
+@app.post("/api/similarity/multi")
+async def api_similarity_multi(
+    image: UploadFile = File(...),
+    model: str = Form("vits16"),
+    size: int = Form(448),
+    points: str = Form("[]"),   # JSON array of [cx, cy] pairs
+    threshold: float = Form(0.5),
+    colormap: str = Form("turbo"),
+    overlay_alpha: float = Form(0.75),
+    max_side: int = Form(1024),
+):
+    model_id = PCA_MODELS.get(model, PCA_MODELS["vits16"])
+    pts = json.loads(points)
+    if not pts:
+        return JSONResponse({"error": "no points provided"}, status_code=400)
+    img = read_image(await image.read(), max_side)
+    t0 = time.time()
+    try:
+        async with _INFER_LOCK:
+            result, info, token = await run_in_threadpool(
+                run_similarity_multi, img, model_id, size, pts,
+                threshold, colormap, overlay_alpha,
+            )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    info["model"] = model_id
+    info["working_res"] = f"{img.width}x{img.height}"
+    info["seconds"] = round(time.time() - t0, 2)
+    return {"image": to_b64_png(result), "info": info, "token": token}

@@ -46,7 +46,7 @@
   .tabs { display: flex; background: var(--panel-2); border-radius: 10px; padding: 4px; margin-bottom: 18px; }
   .tabs button {
     flex: 1; border: 0; background: transparent; color: var(--muted);
-    padding: 9px 0; border-radius: 7px; cursor: pointer; font-size: 14px; font-weight: 600;
+    padding: 8px 4px; border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 600;
     transition: .15s;
   }
   .tabs button.active { background: var(--accent); color: #06101f; }
@@ -123,6 +123,8 @@
 
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #06101f; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; margin-right: 8px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .clickable-img { cursor: crosshair; position: relative; display: block; width: 100%; border-radius: 6px; }
+  .click-dot { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; transform: translate(-50%, -50%); pointer-events: none; background: var(--accent); }
 </style>
 </head>
 <body>
@@ -136,9 +138,11 @@
   <!-- CONTROLS -->
   <div class="panel">
     <div class="tabs">
-      <button id="tabPca" class="active" onclick="setMode('pca')">PCA features</button>
+      <button id="tabPca" class="active" onclick="setMode('pca')">PCA</button>
       <button id="tabDepth" onclick="setMode('depth')">Depth</button>
-      <button id="tabLive" onclick="setMode('live')">Live depth</button>
+      <button id="tabSim" onclick="setMode('sim')">Similarity</button>
+      <button id="tabMulti" onclick="setMode('multi')">Multi</button>
+      <button id="tabLive" onclick="setMode('live')">Live</button>
     </div>
 
     <div class="drop" id="drop">
@@ -159,7 +163,7 @@
       </div>
       <div class="control">
         <label>Input size (longest side) <span class="val" id="sizeV">448</span></label>
-        <input type="range" id="size" min="112" max="1024" step="16" value="448" />
+        <input type="range" id="size" min="112" max="1536" step="16" value="448" />
         <div class="desc">Drives the patch grid: more patches = finer feature map, more memory. Snapped to /16.</div>
       </div>
       <div class="control">
@@ -235,6 +239,73 @@
           <input type="range" id="dGamma" min="0.3" max="2.5" step="0.05" value="1" />
           <div class="desc">&lt;1 boosts contrast among near surfaces; &gt;1 boosts far.</div>
         </div>
+      </div>
+    </div>
+
+    <!-- MULTI-POINT SIMILARITY controls -->
+    <div id="multiControls" style="display:none">
+      <div class="control">
+        <label>Backbone <span class="val" id="multiModelV"></span></label>
+        <select id="multiModel"></select>
+        <div class="desc">Bigger backbone = richer embeddings.</div>
+      </div>
+      <div class="control">
+        <label>Input size <span class="val" id="multiSizeV">448</span></label>
+        <input type="range" id="multiSize" min="112" max="1536" step="16" value="448" />
+        <div class="desc">Patch grid resolution. More = finer click granularity.</div>
+      </div>
+      <div class="control">
+        <label>Similarity threshold <span class="val" id="multiThreshV">0.50</span></label>
+        <input type="range" id="multiThresh" min="-1" max="1" step="0.01" value="0.5" />
+        <div class="desc">Cosine sim cutoff against the averaged query embedding.</div>
+      </div>
+      <div class="control">
+        <label>Overlay opacity <span class="val" id="multiAlphaV">0.75</span></label>
+        <input type="range" id="multiAlpha" min="0" max="1" step="0.05" value="0.75" />
+      </div>
+      <div class="control">
+        <label>Colormap <span class="val" id="multiCmapV">turbo</span></label>
+        <select id="multiCmap"></select>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:14px">
+        <button class="btn secondary" style="margin:0" onclick="multiClear()">✕ Clear points</button>
+        <button class="btn" id="multiRunBtn" style="margin:0; flex:1" onclick="multiRun()" disabled>Run</button>
+      </div>
+      <div id="multiPointList" style="margin-top:10px; font-size:12px; color:var(--muted); min-height:20px"></div>
+      <div class="hint" style="font-size:12px; color:var(--muted); margin-top:10px; line-height:1.5">
+        👆 <b style="color:var(--text)">Click the input image</b> to add query points (up to 20). Their patch embeddings are averaged into one query vector. Threshold slider updates live without re-running the model.
+      </div>
+    </div>
+
+    <!-- SIMILARITY controls -->
+    <div id="simControls" style="display:none">
+      <div class="control">
+        <label>Backbone <span class="val" id="simModelV"></span></label>
+        <select id="simModel"></select>
+        <div class="desc">Bigger backbone = richer embeddings. ViT-S is fast; ViT-L captures finer semantics.</div>
+      </div>
+      <div class="control">
+        <label>Input size <span class="val" id="simSizeV">448</span></label>
+        <input type="range" id="simSize" min="112" max="1536" step="16" value="448" />
+        <div class="desc">More patches = finer click resolution. Snapped to /16.</div>
+      </div>
+      <div class="control">
+        <label>Similarity threshold <span class="val" id="simThreshV">0.50</span></label>
+        <input type="range" id="simThresh" min="-1" max="1" step="0.01" value="0.5" />
+        <div class="desc">Cosine similarity cutoff. Patches at or above this are highlighted. Drag after clicking.</div>
+      </div>
+      <div class="control">
+        <label>Overlay opacity <span class="val" id="simAlphaV">0.75</span></label>
+        <input type="range" id="simAlpha" min="0" max="1" step="0.05" value="0.75" />
+        <div class="desc">Blend strength of the similarity heatmap over the original photo.</div>
+      </div>
+      <div class="control">
+        <label>Colormap <span class="val" id="simCmapV">turbo</span></label>
+        <select id="simCmap"></select>
+        <div class="desc">Warm = high similarity, cool = low (for turbo/magma). Drag threshold to isolate regions.</div>
+      </div>
+      <div class="hint" style="font-size:12px; color:var(--muted); margin-top:12px; line-height:1.5">
+        👆 <b style="color:var(--text)">Click anywhere on the input image</b> to set the query patch. The output shows cosine similarity to every other patch. Use the threshold slider to isolate similar regions without re-running the model.
       </div>
     </div>
 
@@ -328,6 +399,11 @@ let FILE = null;
 let LAST_OUT = null;
 let LAST_TOKEN = null;   // server-side handle to the last depth array, for live re-colour
 let CFG = null;
+let SIM_TOKEN = null;
+let SIM_RERENDER_TIMER = null;
+let MULTI_TOKEN = null;
+let MULTI_RERENDER_TIMER = null;
+let MULTI_POINTS = [];   // [{cx, cy}] fractional coords, max 20
 
 const $ = id => document.getElementById(id);
 
@@ -348,6 +424,36 @@ async function init() {
     o.value = c; o.textContent = c; cm.appendChild(o);
   });
   populateDepthModels(CFG.depth_models, CFG.default_depth_model);
+
+  // similarity backbone (same list as PCA)
+  const simSel = $('simModel');
+  CFG.pca_models.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m;
+    if (m === CFG.default_pca_model) o.selected = true;
+    simSel.appendChild(o);
+  });
+  $('simModelV').textContent = simSel.value;
+  const simCm = $('simCmap');
+  CFG.colormaps.forEach(c => {
+    const o = document.createElement('option'); o.value = c; o.textContent = c; simCm.appendChild(o);
+  });
+  $('simCmapV').textContent = simCm.value;
+
+  // multi-point similarity backbone + colormap
+  const multiSel = $('multiModel');
+  CFG.pca_models.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m; o.textContent = m;
+    if (m === CFG.default_pca_model) o.selected = true;
+    multiSel.appendChild(o);
+  });
+  $('multiModelV').textContent = multiSel.value;
+  const multiCm = $('multiCmap');
+  CFG.colormaps.forEach(c => {
+    const o = document.createElement('option'); o.value = c; o.textContent = c; multiCm.appendChild(o);
+  });
+  $('multiCmapV').textContent = multiCm.value;
 }
 
 // ---- depth model dropdown + on-demand download ----
@@ -474,17 +580,23 @@ function setMode(m) {
   MODE = m;
   $('tabPca').classList.toggle('active', m === 'pca');
   $('tabDepth').classList.toggle('active', m === 'depth');
+  $('tabSim').classList.toggle('active', m === 'sim');
+  $('tabMulti').classList.toggle('active', m === 'multi');
   $('tabLive').classList.toggle('active', m === 'live');
   const live = m === 'live';
+  const clickMode = m === 'sim' || m === 'multi';
   $('pcaControls').style.display = m === 'pca' ? 'block' : 'none';
   $('depthControls').style.display = m === 'depth' ? 'block' : 'none';
+  $('simControls').style.display = m === 'sim' ? 'block' : 'none';
+  $('multiControls').style.display = m === 'multi' ? 'block' : 'none';
   $('liveControls').style.display = live ? 'block' : 'none';
-  // The upload-based controls don't apply to the live camera tab.
   $('drop').style.display = live ? 'none' : 'block';
-  $('maxSideControl').style.display = live ? 'none' : 'block';
-  $('sbsControl').style.display = live ? 'none' : 'block';
-  $('run').style.display = live ? 'none' : 'block';
-  $('modeBadge').textContent = m === 'pca' ? 'PCA features' : (live ? 'Live depth' : 'Depth');
+  $('maxSideControl').style.display = (live || clickMode) ? 'none' : 'block';
+  $('sbsControl').style.display = (live || clickMode) ? 'none' : 'block';
+  $('run').style.display = (live || clickMode) ? 'none' : 'block';
+  const labels = { pca: 'PCA features', depth: 'Depth', sim: 'Similarity', multi: 'Multi-point', live: 'Live depth' };
+  $('modeBadge').textContent = labels[m] || m;
+  updateInputClickable();
   if (live) initLive(); else stopLive();
   updateResultGammaVis();
 }
@@ -498,6 +610,23 @@ bind('bgThreshold', 'bgV', x => Number(x).toFixed(2));
 bind('maxSide', 'maxSideV');
 $('pcaModel').addEventListener('change', e => $('pcaModelV').textContent = e.target.value);
 $('cmap').addEventListener('change', e => $('cmapV').textContent = e.target.value);
+// multi-point similarity bindings
+bind('multiSize', 'multiSizeV');
+bind('multiThresh', 'multiThreshV', x => Number(x).toFixed(2));
+bind('multiAlpha', 'multiAlphaV', x => Number(x).toFixed(2));
+$('multiModel').addEventListener('change', e => { $('multiModelV').textContent = e.target.value; MULTI_TOKEN = null; });
+$('multiCmap').addEventListener('change', e => { $('multiCmapV').textContent = e.target.value; multiRerender(); });
+$('multiThresh').addEventListener('input', multiRerender);
+$('multiAlpha').addEventListener('input', multiRerender);
+
+// similarity bindings
+bind('simSize', 'simSizeV');
+bind('simThresh', 'simThreshV', x => Number(x).toFixed(2));
+bind('simAlpha', 'simAlphaV', x => Number(x).toFixed(2));
+$('simModel').addEventListener('change', e => { $('simModelV').textContent = e.target.value; SIM_TOKEN = null; });
+$('simCmap').addEventListener('change', e => { $('simCmapV').textContent = e.target.value; simRerender(); });
+$('simThresh').addEventListener('input', simRerender);
+$('simAlpha').addEventListener('input', simRerender);
 $('depthModel').addEventListener('change', () => { LAST_TOKEN = null; onDepthModelChange(); });
 $('depthView').addEventListener('change', e => {
   const pca = e.target.value === 'pca';
@@ -605,19 +734,22 @@ async function loadFromUrl(url) {
 function loadFile(f) {
   if (!f.type.startsWith('image/')) return;
   FILE = f;
-  LAST_TOKEN = null;   // new image -> old cached depth is stale
+  LAST_TOKEN = null;
+  SIM_TOKEN = null;
+  MULTI_TOKEN = null;
+  MULTI_POINTS = [];
   const url = URL.createObjectURL(f);
   $('preview').src = url; $('preview').style.display = 'block';
   $('dropEmpty').style.display = 'none';
   $('inputSlot').innerHTML = `<img src="${url}" />`;
   $('run').disabled = false;
+  updateInputClickable();
 }
 
 // ---- generate ----
 async function generate() {
   if (!FILE) return;
-  // In depth mode, refuse to run if the chosen model isn't downloaded yet —
-  // otherwise the request would silently trigger a slow blocking download.
+  // In depth mode, refuse to run if the chosen model isn't downloaded yet.
   if (MODE === 'depth') {
     const m = currentDepthModel();
     if (m && !m.cached) {
@@ -646,6 +778,16 @@ async function generate() {
     fd.append('pct_high', $('pctHigh').value);
     fd.append('remove_bg', $('removeBg').checked);
     fd.append('bg_threshold', $('bgThreshold').value);
+  } else if (MODE === 'seg') {
+    url = '/api/segment';
+    fd.append('model', $('segModel').value);
+    fd.append('size', $('segSize').value);
+    fd.append('n_clusters', $('segK').value);
+    fd.append('pct_low', $('segPctLow').value);
+    fd.append('pct_high', $('segPctHigh').value);
+    fd.append('overlay_alpha', $('segAlpha').value);
+    fd.append('palette', $('segPalette').value);
+    fd.append('show_boundaries', $('segBoundaries').checked);
   } else if ($('depthView').value === 'pca') {
     url = '/api/depth_pca';
     fd.append('model', $('depthModel').value);
@@ -671,6 +813,8 @@ async function generate() {
     updateResultGammaVis();
     $('outputSlot').innerHTML = `<img src="${data.image}" />`;
     $('outCap').textContent = MODE === 'pca' ? 'PCA feature map'
+      : MODE === 'seg' ? 'Segmentation'
+      : MODE === 'sim' ? 'Similarity map'
       : ($('depthView').value === 'pca' ? 'Depth feature PCA' : 'Depth');
     renderStats(data.info);
     $('download').style.display = 'block';
@@ -933,6 +1077,187 @@ function downloadOut() {
   a.href = LAST_OUT;
   a.download = (MODE === 'pca' ? 'pca' : 'depth') + '.png';
   a.click();
+}
+
+// ===== Multi-point similarity =====
+
+function handleMultiClick(e) {
+  if (!FILE) return;
+  if (MULTI_POINTS.length >= 20) return;
+  const rect = e.target.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) / rect.width;
+  const cy = (e.clientY - rect.top) / rect.height;
+  MULTI_POINTS.push({ cx, cy });
+  MULTI_TOKEN = null;
+  renderMultiDots();
+  updateMultiRunBtn();
+}
+
+function renderMultiDots() {
+  // Re-render the input slot image with dots overlaid via a wrapper div
+  const img = $('inputSlot').querySelector('img');
+  if (!img) return;
+  // Remove old dots
+  $('inputSlot').querySelectorAll('.click-dot').forEach(d => d.remove());
+  const rect = img.getBoundingClientRect();
+  MULTI_POINTS.forEach((p, i) => {
+    const dot = document.createElement('div');
+    dot.className = 'click-dot';
+    dot.style.left = (p.cx * 100) + '%';
+    dot.style.top = (p.cy * 100) + '%';
+    dot.title = `Point ${i + 1}`;
+    $('inputSlot').style.position = 'relative';
+    $('inputSlot').appendChild(dot);
+  });
+  const n = MULTI_POINTS.length;
+  $('multiPointList').textContent = n === 0 ? '' : `${n} point${n > 1 ? 's' : ''} selected — embeddings will be averaged`;
+}
+
+function updateMultiRunBtn() {
+  $('multiRunBtn').disabled = MULTI_POINTS.length === 0;
+}
+
+function multiClear() {
+  MULTI_POINTS = [];
+  MULTI_TOKEN = null;
+  $('inputSlot').querySelectorAll('.click-dot').forEach(d => d.remove());
+  $('multiPointList').textContent = '';
+  $('outputSlot').innerHTML = '<div class="placeholder">Add points, then Run</div>';
+  $('stats').innerHTML = '';
+  $('download').style.display = 'none';
+  updateMultiRunBtn();
+}
+
+async function multiRun() {
+  if (!FILE || MULTI_POINTS.length === 0) return;
+  $('err').textContent = '';
+  $('outputSlot').innerHTML = '<div class="placeholder"><span class="spinner" style="border-color:var(--muted);border-top-color:transparent"></span> Embedding…</div>';
+
+  const fd = new FormData();
+  fd.append('image', FILE);
+  fd.append('model', $('multiModel').value);
+  fd.append('size', $('multiSize').value);
+  fd.append('points', JSON.stringify(MULTI_POINTS.map(p => [p.cx, p.cy])));
+  fd.append('threshold', $('multiThresh').value);
+  fd.append('colormap', $('multiCmap').value);
+  fd.append('overlay_alpha', $('multiAlpha').value);
+  fd.append('max_side', $('multiSize').value);
+  try {
+    const res = await fetch('/api/similarity/multi', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    MULTI_TOKEN = data.token || null;
+    LAST_OUT = data.image;
+    $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+    $('outCap').textContent = 'Multi-point similarity';
+    renderStats(data.info);
+    $('download').style.display = 'block';
+  } catch (e) {
+    $('err').textContent = '⚠ ' + e.message;
+    $('outputSlot').innerHTML = '<div class="placeholder">Error</div>';
+  }
+}
+
+async function multiRerender() {
+  if (MODE !== 'multi') return;
+  clearTimeout(MULTI_RERENDER_TIMER);
+  MULTI_RERENDER_TIMER = setTimeout(async () => {
+    if (!MULTI_TOKEN) return;
+    const fd = new FormData();
+    fd.append('token', MULTI_TOKEN);
+    fd.append('threshold', $('multiThresh').value);
+    fd.append('colormap', $('multiCmap').value);
+    fd.append('overlay_alpha', $('multiAlpha').value);
+    try {
+      const res = await fetch('/api/similarity/rerender', { method: 'POST', body: fd });
+      if (res.status === 410) { MULTI_TOKEN = null; return; }
+      const data = await res.json();
+      if (!res.ok || data.error) return;
+      LAST_OUT = data.image;
+      $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+      renderStats(data.info);
+    } catch (_) {}
+  }, 80);
+}
+
+// ===== Similarity (click-a-patch) =====
+
+// Make the input image clickable when in similarity mode.
+function updateInputClickable() {
+  const img = $('inputSlot').querySelector('img');
+  if (!img) return;
+  if (MODE === 'sim') {
+    img.classList.add('clickable-img');
+    img.onclick = handleSimClick;
+  } else if (MODE === 'multi') {
+    img.classList.add('clickable-img');
+    img.onclick = handleMultiClick;
+  } else {
+    img.classList.remove('clickable-img');
+    img.onclick = null;
+  }
+}
+
+function handleSimClick(e) {
+  if (!FILE) return;
+  const rect = e.target.getBoundingClientRect();
+  const cx = (e.clientX - rect.left) / rect.width;
+  const cy = (e.clientY - rect.top) / rect.height;
+  SIM_TOKEN = null;  // new click invalidates old cache
+  runSimilarity(cx, cy);
+}
+
+async function runSimilarity(cx, cy) {
+  if (!FILE) return;
+  $('err').textContent = '';
+  $('outputSlot').innerHTML = '<div class="placeholder"><span class="spinner" style="border-color:var(--muted);border-top-color:transparent"></span> Embedding…</div>';
+
+  const fd = new FormData();
+  fd.append('image', FILE);
+  fd.append('model', $('simModel').value);
+  fd.append('size', $('simSize').value);
+  fd.append('click_x', cx);
+  fd.append('click_y', cy);
+  fd.append('threshold', $('simThresh').value);
+  fd.append('colormap', $('simCmap').value);
+  fd.append('overlay_alpha', $('simAlpha').value);
+  fd.append('max_side', $('simSize').value);
+  try {
+    const res = await fetch('/api/similarity', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    SIM_TOKEN = data.token || null;
+    LAST_OUT = data.image;
+    $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+    $('outCap').textContent = 'Similarity map';
+    renderStats(data.info);
+    $('download').style.display = 'block';
+  } catch (e) {
+    $('err').textContent = '⚠ ' + e.message;
+    $('outputSlot').innerHTML = '<div class="placeholder">Error</div>';
+  }
+}
+
+async function simRerender() {
+  if (MODE !== 'sim') return;
+  clearTimeout(SIM_RERENDER_TIMER);
+  SIM_RERENDER_TIMER = setTimeout(async () => {
+    if (!SIM_TOKEN) return;
+    const fd = new FormData();
+    fd.append('token', SIM_TOKEN);
+    fd.append('threshold', $('simThresh').value);
+    fd.append('colormap', $('simCmap').value);
+    fd.append('overlay_alpha', $('simAlpha').value);
+    try {
+      const res = await fetch('/api/similarity/rerender', { method: 'POST', body: fd });
+      if (res.status === 410) { SIM_TOKEN = null; return; }  // expired
+      const data = await res.json();
+      if (!res.ok || data.error) return;
+      LAST_OUT = data.image;
+      $('outputSlot').innerHTML = `<img src="${data.image}" />`;
+      renderStats(data.info);
+    } catch (_) {}
+  }, 80);
 }
 
 init();
