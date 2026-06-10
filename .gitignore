@@ -11,14 +11,42 @@ dino-inference/.venv/
 dino-inference/models/
 dino-inference/outputs/
 
+# HuggingFace model cache
+.cache/
+~/.cache/huggingface/
+
+# Grasp pipeline outputs
+outputs/
+grasp/outputs/
+
+# Large model weights / checkpoints
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+
+# Video recordings
+*.mp4
+*.avi
+*.mov
+
+# Jupyter
+*.ipynb_checkpoints/
+
 # OS / editor
 .DS_Store
 *.swp
 .idea/
 .vscode/
 
+# MolmoAct2 (large model artifacts)
+molmoact2/
+
 # Node
 node_modules/
+package-lock.json
 
 # Playwright MCP browser artifacts (snapshots, console logs, screenshots)
 .playwright-mcp/
